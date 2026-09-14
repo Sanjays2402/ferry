@@ -82,7 +82,9 @@ def cmd_purge(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="ferry", description="Ferry — lightweight distributed task queue")
+    p = argparse.ArgumentParser(
+        prog="ferry", description="Ferry — lightweight distributed task queue"
+    )
     sub = p.add_subparsers(dest="command", required=True)
 
     w = sub.add_parser("worker", help="run a worker")

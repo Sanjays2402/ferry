@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import functools
-import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any, Callable
 
 from .broker import SQLiteBroker, open_broker
 from .cron import CronSchedule
@@ -18,7 +17,7 @@ class Task:
 
     def __init__(
         self,
-        app: "Ferry",
+        app: Ferry,
         func: Callable,
         *,
         name: str,
@@ -77,7 +76,7 @@ class Ferry:
 
     def __init__(self, name: str = "ferry", broker: str | SQLiteBroker = "sqlite:///ferry.db"):
         self.name = name
-        self.broker = broker if isinstance(broker, SQLiteBroker) else open_broker(broker)
+        self.broker = open_broker(broker) if isinstance(broker, str) else broker
         self.registry: dict[str, Task] = {}
         self.events = EventBus()
         self._periodic: list[tuple[CronSchedule, str, dict]] = []

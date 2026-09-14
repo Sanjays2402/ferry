@@ -45,7 +45,7 @@ Most task queues make you choose: **simple** (a Redis list and hope) or **seriou
 | Reliability | Dead-letter queue, stale-claim recovery, graceful worker shutdown |
 | Observability | Events API (`task_enqueued/succeeded/failed/dead`), live dashboard |
 | Payloads | JSON with datetime/date/UUID/bytes/set support; strict errors on the rest |
-| Brokers | SQLite out of the box (WAL mode); Redis interface ready behind `redis://` URLs |
+| Brokers | SQLite out of the box (WAL mode); Redis via `redis://` URLs |
 
 ## Architecture
 
@@ -69,6 +69,7 @@ ferry/
 ├── __init__.py        public API
 ├── app.py             Ferry app, @app.task / @app.periodic, Task.handle
 ├── broker.py          SQLite broker: enqueue, atomic claim, ack, stats
+├── redis_broker.py    Redis broker: same API, Lua-atomic claims, sorted-set queues
 ├── worker.py          thread-pool worker, retries, graceful shutdown
 ├── scheduler.py       beat: cron scheduling + stale-claim recovery
 ├── cron.py            cron expression parser
@@ -78,7 +79,7 @@ ferry/
 ├── static/            dashboard UI (no build step)
 ├── cli.py             `ferry worker|beat|dashboard|stats|purge`
 └── serialization.py   strict JSON codec for args/results
-tests/                 40+ tests: broker, worker, retries, cron, beat, dashboard
+tests/                 57 tests: broker, worker, retries, cron, beat, dashboard, redis
 examples/              quickstart, fan-out/fan-in
 ```
 
@@ -107,11 +108,33 @@ send_email.apply_async(args=("a@b.c",), kwargs={"subject": "hi"},
 
 `pip install "ferry[dashboard]"`, then `ferry dashboard`. You get queue depth, a per-minute throughput chart, a filterable task table with one-click retry of dead tasks, queue purge, and a live worker roster — all pushed over a WebSocket, no page reloads.
 
+![Ferry dashboard](docs/dashboard.png)
+
+## Performance
+
+`python benchmarks/bench.py` — end-to-end throughput (enqueue → execute → result) for no-op tasks on the SQLite broker:
+
+| Tasks | Concurrency | Throughput |
+|---|---|---|
+| 2,000 | 8 | **~1,275 tasks/sec** |
+
+Measured on a 2-vCPU Linux VM, Python 3.12. Queue overhead per task is well under a millisecond; your task's own runtime dominates in practice.
+
 ## How it compares
 
 | | Ferry | Celery | RQ | Dramatiq |
 |---|---|---|---|---|
 | Broker to get started | SQLite file (zero setup) | Redis/RabbitMQ | Redis | Redis/RabbitMQ |
+
+### Scaling past one box
+
+When a single SQLite file isn't enough, point Ferry at Redis — same API, same guarantees:
+
+```python
+app = Ferry("myapp", broker="redis://localhost:6379/0")
+```
+
+Claims run as one atomic Lua script (move due delayed tasks, pop the highest-priority task), so workers stay exactly-once across machines with no extra coordination. Needs `pip install "ferry[redis]"`.
 | Priorities | ✅ | ✅ (kombu) | ❌ | ❌ |
 | Cron scheduling | ✅ built in | ✅ (beat) | ❌ (needs rq-scheduler) | ✅ |
 | Dead-letter queue | ✅ | ✅ | ❌ | ✅ |

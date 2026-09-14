@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-import time
 import uuid
 from datetime import datetime, timezone
 
@@ -104,7 +103,8 @@ class SQLiteBroker:
         if scheduled_id is not None:
             # periodic tasks: at most one pending instance per schedule slot
             row = self._connect().execute(
-                "SELECT id FROM ferry_tasks WHERE scheduled_id = ? AND status IN ('queued','claimed','running')",
+                "SELECT id FROM ferry_tasks WHERE scheduled_id = ? "
+                "AND status IN ('queued','claimed','running')",
                 (scheduled_id,),
             ).fetchone()
             if row:
@@ -112,7 +112,8 @@ class SQLiteBroker:
         task_id = uuid.uuid4().hex
         self._connect().execute(
             """INSERT INTO ferry_tasks
-               (id, queue, task_name, args, kwargs, priority, max_retries, eta, scheduled_id, created_at)
+               (id, queue, task_name, args, kwargs, priority,
+                max_retries, eta, scheduled_id, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
@@ -175,7 +176,8 @@ class SQLiteBroker:
             return False
         conn.execute(
             """UPDATE ferry_tasks
-               SET status='queued', attempts=attempts+1, error=?, eta=?, worker_id=NULL, claimed_at=NULL
+               SET status='queued', attempts=attempts+1, error=?,
+                   eta=?, worker_id=NULL, claimed_at=NULL
                WHERE id=?""",
             (error, retry_at.astimezone(timezone.utc).isoformat(), task_id),
         )
@@ -203,7 +205,8 @@ class SQLiteBroker:
     # -- workers ---------------------------------------------------------------
     def heartbeat(self, worker_id: str, queues: list[str], concurrency: int, hostname: str) -> None:
         self._connect().execute(
-            """INSERT INTO ferry_workers (worker_id, queues, concurrency, last_beat, started_at, hostname)
+            """INSERT INTO ferry_workers
+               (worker_id, queues, concurrency, last_beat, started_at, hostname)
                VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(worker_id) DO UPDATE SET
                  queues=excluded.queues, concurrency=excluded.concurrency,
@@ -313,11 +316,19 @@ class SQLiteBroker:
     # -- payload helpers ---------------------------------------------------------
     @staticmethod
     def decode_args(task: dict) -> tuple[list, dict]:
-        return loads(task["args"]), loads(task["kwargs"])
+        return _decode_args(task)
 
     @staticmethod
     def decode_result(task: dict):
-        return loads(task["result"]) if task["result"] else None
+        return _decode_result(task)
+
+
+def _decode_args(task: dict) -> tuple[list, dict]:
+    return loads(task["args"]), loads(task["kwargs"])
+
+
+def _decode_result(task: dict):
+    return loads(task["result"]) if task["result"] else None
 
 
 def open_broker(url: str) -> SQLiteBroker:

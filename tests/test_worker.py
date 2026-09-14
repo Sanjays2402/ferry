@@ -1,7 +1,6 @@
 import pytest
 
-from ferry import Ferry, TaskFailed
-from ferry.worker import Worker
+from ferry import TaskFailed
 from tests.conftest import run_until
 
 

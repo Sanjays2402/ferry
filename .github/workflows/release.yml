@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          pip install build
+          python -m build
+      - name: Smoke-test installed wheel
+        run: |
+          python -m venv /tmp/relcheck
+          /tmp/relcheck/bin/pip install -q dist/*.whl
+          /tmp/relcheck/bin/python - <<'EOF'
+          import ferry, os
+          from ferry import Ferry
+          app = Ferry("rel", broker="sqlite:////tmp/rel.db")
+
+          @app.task
+          def add(a, b):
+              return a + b
+
+          assert add.delay(2, 3).task_id, "enqueue failed"
+          # run the task through a real worker
+          from ferry.worker import Worker
+          r = add.delay(20, 22)
+          w = Worker(app, poll_interval=0.01)
+          import time
+          deadline = time.monotonic() + 20
+          while not r.ready() and time.monotonic() < deadline:
+              w.run_once(timeout=1.0)
+          assert r.get(timeout=5) == 42
+          # dashboard static files ship in the wheel
+          assert os.path.exists(os.path.join(os.path.dirname(ferry.__file__), "static", "index.html"))
+          print("wheel smoke test OK")
+          EOF
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

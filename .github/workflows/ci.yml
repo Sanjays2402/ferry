@@ -6,6 +6,18 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Lint
+        run: ruff check ferry tests benchmarks
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -17,6 +29,29 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,redis]"
       - name: Test
         run: pytest
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          pip install build
+          python -m build
+      - name: Check wheel contents
+        run: |
+          python - <<'EOF'
+          import glob, zipfile
+          wheels = glob.glob("dist/*.whl")
+          assert wheels, "no wheel built"
+          names = zipfile.ZipFile(wheels[0]).namelist()
+          assert any("ferry/static/index.html" in n for n in names), \
+              "dashboard static files missing from wheel!"
+          print("wheel OK:", wheels[0])
+          EOF

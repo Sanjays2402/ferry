@@ -11,15 +11,15 @@ from .worker import Worker
 __version__ = "0.1.0"
 
 __all__ = [
-    "Ferry",
-    "Task",
-    "Worker",
-    "Beat",
     "AsyncResult",
-    "TaskFailed",
-    "SQLiteBroker",
-    "open_broker",
+    "Beat",
     "CronSchedule",
     "EventBus",
+    "Ferry",
+    "SQLiteBroker",
+    "Task",
+    "TaskFailed",
+    "Worker",
     "__version__",
+    "open_broker",
 ]
