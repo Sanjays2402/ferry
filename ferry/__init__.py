@@ -13,7 +13,7 @@ from .canvas import (
 )
 from .cron import CronSchedule
 from .events import EventBus
-from .results import AsyncResult, TaskFailed
+from .results import AsyncResult, ResultExpired, TaskFailed
 from .scheduler import Beat
 from .worker import Worker
 
@@ -31,6 +31,7 @@ __all__ = [
     "Ferry",
     "Group",
     "GroupResult",
+    "ResultExpired",
     "SQLiteBroker",
     "Signature",
     "Task",

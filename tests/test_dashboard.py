@@ -57,3 +57,49 @@ def test_purge(client, tmp_path):
     job.delay()
     r = client.post("/api/tasks/purge")
     assert r.json() == {"purged": 2}
+
+
+def test_task_detail_endpoint(client, tmp_path):
+    from ferry import Ferry
+
+    ferry = Ferry("x", broker=f"sqlite:///{tmp_path}/dash.db")
+
+    @ferry.task(queue="emails")
+    def send(to, subject="hi"):
+        return f"sent {subject} to {to}"
+
+    r = send.delay("ada@example.com")
+    detail = client.get(f"/api/tasks/{r.task_id}").json()
+    assert detail["id"] == r.task_id
+    assert detail["args_decoded"] == ["ada@example.com"]
+    assert detail["kwargs_decoded"] == {}
+    assert detail["queue"] == "emails"
+    assert client.get("/api/tasks/nope").status_code == 404
+
+
+def test_queue_pause_resume_endpoints(client):
+    assert client.get("/api/stats").json()["paused"] == []
+    r = client.post("/api/queues/emails/pause")
+    assert r.json() == {"paused": True, "queue": "emails"}
+    assert client.get("/api/stats").json()["paused"] == ["emails"]
+    r = client.post("/api/queues/emails/resume")
+    assert r.json() == {"paused": False, "queue": "emails"}
+    assert client.get("/api/stats").json()["paused"] == []
+
+
+def test_retry_dead_endpoint(client, tmp_path):
+    from ferry import Ferry
+
+    ferry = Ferry("x", broker=f"sqlite:///{tmp_path}/dash.db")
+
+    @ferry.task(max_retries=0)
+    def boom():
+        raise RuntimeError("kaput")
+
+    r1, r2 = boom.delay(), boom.delay()
+    ferry.broker.ack_failed(r1.task_id, "boom", None)
+    ferry.broker.ack_failed(r2.task_id, "boom", None)
+    r = client.post("/api/tasks/retry-dead")
+    assert r.json() == {"retried": 2}
+    assert client.get("/api/tasks?status=queued").json() != []
+    assert client.post("/api/tasks/retry-dead").json() == {"retried": 0}

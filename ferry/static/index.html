@@ -47,9 +47,10 @@
   <section class="panel">
     <div class="panel-head">
       <h2>Queues</h2>
+      <span class="muted">paused queues are skipped by workers</span>
     </div>
     <table class="table" id="queues-table">
-      <thead><tr><th>Queue</th><th>Queued</th><th>Active</th><th>Dead</th><th></th></tr></thead>
+      <thead><tr><th>Queue</th><th>Status</th><th>Queued</th><th>Active</th><th>Dead</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </section>
@@ -69,10 +70,12 @@
         </select>
         <input id="f-queue" type="text" placeholder="queue name…">
         <button id="f-refresh" class="btn">Refresh</button>
+        <button id="f-retry-dead" class="btn">Retry all dead</button>
+        <button id="f-retry-selected" class="btn accent hidden">Retry selected (<span id="sel-count">0</span>)</button>
       </div>
     </div>
     <table class="table" id="tasks-table">
-      <thead><tr><th>Task</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Worker</th><th>Finished</th><th></th></tr></thead>
+      <thead><tr><th><input type="checkbox" id="sel-all" title="select all"></th><th>Task</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Worker</th><th>Finished</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </section>
@@ -85,6 +88,16 @@
     </table>
   </section>
 </main>
+
+<aside id="drawer" class="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <h2 id="d-title">Task</h2>
+    <button id="d-close" class="btn small">Close</button>
+  </div>
+  <div id="d-body" class="drawer-body"></div>
+</aside>
+<div id="drawer-scrim" class="scrim hidden"></div>
+<div id="toasts" class="toasts"></div>
 
 <script src="app.js"></script>
 </body>

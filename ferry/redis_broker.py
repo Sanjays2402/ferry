@@ -111,6 +111,7 @@ class RedisBroker:
         chain: str | list | None = None,
         chord_id: str | None = None,
         chord_index: int | None = None,
+        dedupe_key: str | None = None,
     ) -> str:
         from .serialization import dumps
 
@@ -118,6 +119,14 @@ class RedisBroker:
             existing = self._r.hget(self._k("sched"), scheduled_id)
             if existing:
                 return existing
+        if dedupe_key is not None:
+            existing = self._r.hget(self._k("dedupe"), dedupe_key)
+            if existing:
+                t = self.get_task(existing)
+                if t and t["status"] in ("queued", "claimed", "running"):
+                    return existing
+                # stale mapping for a finished task: drop it and enqueue fresh
+                self._r.hdel(self._k("dedupe"), dedupe_key)
         if task_id is None:
             task_id = uuid.uuid4().hex
         if chain is not None and not isinstance(chain, str):
@@ -147,6 +156,8 @@ class RedisBroker:
                 "chain": chain or "",
                 "chord_id": chord_id or "",
                 "chord_index": "" if chord_index is None else chord_index,
+                "dedupe_key": dedupe_key or "",
+                "result_expired": 0,
             },
         )
         if eta_ts and eta_ts > time.time():
@@ -157,6 +168,8 @@ class RedisBroker:
         pipe.hincrby(self._k("counts"), "queued", 1)
         if scheduled_id:
             pipe.hset(self._k("sched"), scheduled_id, task_id)
+        if dedupe_key:
+            pipe.hset(self._k("dedupe"), dedupe_key, task_id)
         pipe.execute()
         return task_id
 
@@ -190,10 +203,14 @@ class RedisBroker:
     def ack_done(self, task_id: str, result) -> None:
         from .serialization import dumps
 
-        self._r.hset(
-            self._k("task", task_id),
-            mapping={"result": dumps(result), "finished_at": _utcnow()},
-        )
+        key = self._k("task", task_id)
+        dk = self._r.hget(key, "dedupe_key")
+        pipe = self._r.pipeline()
+        pipe.hset(key, mapping={"result": dumps(result), "finished_at": _utcnow()})
+        if dk:
+            # dedupe only collapses pending duplicates; a finished task frees its key
+            pipe.hdel(self._k("dedupe"), dk)
+        pipe.execute()
         self._set_status(task_id, "done")
         self._r.zadd(self._k("finished"), {f"{task_id}:done": time.time()})
 
@@ -202,10 +219,13 @@ class RedisBroker:
         if task is None:
             return False
         if retry_at is None:
-            self._r.hset(
-                self._k("task", task_id),
-                mapping={"error": error, "finished_at": _utcnow()},
-            )
+            key = self._k("task", task_id)
+            dk = self._r.hget(key, "dedupe_key")
+            pipe = self._r.pipeline()
+            pipe.hset(key, mapping={"error": error, "finished_at": _utcnow()})
+            if dk:
+                pipe.hdel(self._k("dedupe"), dk)
+            pipe.execute()
             self._set_status(task_id, "dead")
             self._r.zadd(self._k("finished"), {f"{task_id}:dead": time.time()})
             return False
@@ -277,6 +297,48 @@ class RedisBroker:
             out["task_ids"] = res[2]
         return out
 
+    # -- control plane: queue pause/resume ---------------------------------------
+    def pause_queue(self, queue: str) -> None:
+        """Pause a queue: workers skip it until :meth:`resume_queue` is called."""
+        self._r.hset(self._k("paused"), queue, "1")
+
+    def resume_queue(self, queue: str) -> None:
+        self._r.hdel(self._k("paused"), queue)
+
+    def paused_queues(self) -> list[str]:
+        return sorted(self._r.hkeys(self._k("paused")))
+
+    # -- control plane: result expiry --------------------------------------------
+    def expire_results(self, older_than_seconds: float) -> int:
+        """Drop result payloads of done tasks older than ``older_than_seconds``.
+
+        Rows stay for history; ``result_expired`` is set so ``AsyncResult.get()``
+        raises :class:`ResultExpired` instead of returning a stale payload."""
+        cutoff = time.time() - older_than_seconds
+        n = 0
+        for member in self._r.zrangebyscore(self._k("finished"), 0, cutoff):
+            task_id, status = member.rsplit(":", 1)
+            if status != "done":
+                continue
+            key = self._k("task", task_id)
+            if self._r.hget(key, "result"):
+                self._r.hset(key, mapping={"result": "", "result_expired": 1})
+                n += 1
+        return n
+
+    # -- control plane: bulk retry -------------------------------------------------
+    def retry_dead(self, queue: str | None = None) -> int:
+        """Requeue every failed/dead task (optionally limited to one queue)."""
+        n = 0
+        for t in self.list_tasks(limit=100000):
+            if t["status"] not in ("failed", "dead"):
+                continue
+            if queue and t["queue"] != queue:
+                continue
+            if self.retry_task(t["id"]):
+                n += 1
+        return n
+
     # -- workers -----------------------------------------------------------------
     def heartbeat(self, worker_id: str, queues: list[str], concurrency: int, hostname: str) -> None:
         self._r.hset(
@@ -324,6 +386,7 @@ class RedisBroker:
         t["max_retries"] = int(t["max_retries"])
         ci = t.get("chord_index")
         t["chord_index"] = int(ci) if ci not in (None, "") else None
+        t["result_expired"] = t.get("result_expired") in ("1", 1, True)
         return t
 
     def get_task_by_scheduled_id(self, scheduled_id: str) -> dict | None:
@@ -368,7 +431,7 @@ class RedisBroker:
             elif t["status"] == "dead":
                 q["dead"] += 1
         return {"tasks": counts, "queues": sorted(queues.values(), key=lambda q: q["queue"]),
-                "workers": self.list_workers()}
+                "workers": self.list_workers(), "paused": self.paused_queues()}
 
     def throughput(self, minutes: int = 60) -> list[dict]:
         cutoff = time.time() - minutes * 60

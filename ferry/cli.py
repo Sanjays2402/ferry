@@ -81,6 +81,30 @@ def cmd_purge(args) -> int:
     return 0
 
 
+def cmd_pause(args) -> int:
+    from .broker import open_broker
+
+    open_broker(args.broker).pause_queue(args.queue)
+    print(f"paused queue {args.queue!r}: workers will skip it until resumed")
+    return 0
+
+
+def cmd_resume(args) -> int:
+    from .broker import open_broker
+
+    open_broker(args.broker).resume_queue(args.queue)
+    print(f"resumed queue {args.queue!r}")
+    return 0
+
+
+def cmd_retry_dead(args) -> int:
+    from .broker import open_broker
+
+    n = open_broker(args.broker).retry_dead(queue=args.queue)
+    print(f"requeued {n} failed/dead task(s)" + (f" from {args.queue!r}" if args.queue else ""))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ferry", description="Ferry — lightweight distributed task queue"
@@ -113,6 +137,21 @@ def build_parser() -> argparse.ArgumentParser:
     pu.add_argument("--broker", default="sqlite:///ferry.db")
     pu.add_argument("--queue", default=None)
     pu.set_defaults(func=cmd_purge)
+
+    pa = sub.add_parser("pause", help="pause a queue (workers skip it)")
+    pa.add_argument("queue")
+    pa.add_argument("--broker", default="sqlite:///ferry.db")
+    pa.set_defaults(func=cmd_pause)
+
+    re = sub.add_parser("resume", help="resume a paused queue")
+    re.add_argument("queue")
+    re.add_argument("--broker", default="sqlite:///ferry.db")
+    re.set_defaults(func=cmd_resume)
+
+    rd = sub.add_parser("retry-dead", help="requeue all failed/dead tasks")
+    rd.add_argument("--broker", default="sqlite:///ferry.db")
+    rd.add_argument("--queue", default=None)
+    rd.set_defaults(func=cmd_retry_dead)
 
     return p
 

@@ -7,6 +7,11 @@ All notable changes to Ferry are documented here. The format follows [Keep a Cha
 ### Added
 - Task canvases: `app.chain()`, `app.group()`, `app.chord()` with `Task.s()` / `Task.si()` signatures and per-link `.set()` options; `ChainResult`, `GroupResult`, `ChordResult`. Works on both brokers; chord completion uses an atomic barrier so the callback fires exactly once.
 - README visuals: architecture diagram, terminal card with real `ferry worker` / `ferry stats` output, and a chain/group/chord diagram (replaces the mermaid sketch).
+- Control plane: pause/resume queues (`broker.pause_queue()` / `resume_queue()`, `ferry pause` / `ferry resume`, dashboard toggles); workers skip paused queues while tasks pile up untouched.
+- `dedupe_key` on `apply_async()`: while a task with the same key is pending, re-enqueueing returns the existing task id instead of a duplicate.
+- Result TTL: `Ferry(result_ttl=…)`; the beat drops result payloads older than the TTL and `AsyncResult.get()` raises the new `ResultExpired` (rows stay for history).
+- Bulk retry: `broker.retry_dead([queue])`, `ferry retry-dead [--queue]`, dashboard "Retry all dead" plus bulk retry of selected tasks.
+- Dashboard: click any task for an inspector drawer (arguments, result/traceback, status timeline); queue status badges with pause/resume buttons; bulk-select checkboxes; toast notifications.
 
 ## [0.1.0] — 2026-09-14
 

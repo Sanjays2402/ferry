@@ -75,4 +75,9 @@ class Beat:
         recovered = self.app.broker.requeue_stale_claims(self.stale_after)
         if recovered:
             log.warning("beat recovered %d stale task(s) from dead workers", recovered)
+        ttl = getattr(self.app, "result_ttl", None)
+        if ttl:
+            expired = self.app.broker.expire_results(ttl)
+            if expired:
+                log.info("beat expired %d old result payload(s)", expired)
         return enqueued

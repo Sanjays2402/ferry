@@ -51,7 +51,10 @@ class Task:
         max_retries: int | None = None,
         countdown: float | None = None,
         eta: datetime | None = None,
+        dedupe_key: str | None = None,
     ) -> AsyncResult:
+        """Enqueue a task. ``dedupe_key`` collapses duplicates: while a task
+        with the same key is pending, the existing task's id is returned."""
         if countdown is not None and eta is not None:
             raise ValueError("pass either countdown or eta, not both")
         if countdown is not None:
@@ -64,6 +67,7 @@ class Task:
             priority=self.priority if priority is None else priority,
             max_retries=self.max_retries if max_retries is None else max_retries,
             eta=eta,
+            dedupe_key=dedupe_key,
         )
         self.app.events.emit("task_enqueued", {"task_id": task_id, "task_name": self.name})
         return AsyncResult(self.app.broker, task_id)
@@ -96,11 +100,20 @@ class Task:
 class Ferry:
     """The Ferry application object. Owns the broker, the task registry, and schedules."""
 
-    def __init__(self, name: str = "ferry", broker: str | SQLiteBroker = "sqlite:///ferry.db"):
+    def __init__(
+        self,
+        name: str = "ferry",
+        broker: str | SQLiteBroker = "sqlite:///ferry.db",
+        result_ttl: float | None = None,
+    ):
+        """``result_ttl`` (seconds): how long to keep task result payloads.
+        The beat drops payloads older than this; ``AsyncResult.get()`` then
+        raises :class:`ResultExpired`. Task rows stay for history."""
         self.name = name
         self.broker = open_broker(broker) if isinstance(broker, str) else broker
         self.registry: dict[str, Task] = {}
         self.events = EventBus()
+        self.result_ttl = result_ttl
         self._periodic: list[tuple[CronSchedule, str, dict]] = []
 
     def task(

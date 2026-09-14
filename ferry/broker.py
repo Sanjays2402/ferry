@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS ferry_chords (
     body      TEXT NOT NULL,      -- serialized callback signature (JSON)
     task_ids  TEXT NOT NULL       -- header task ids in order (JSON list)
 );
+CREATE TABLE IF NOT EXISTS ferry_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -87,9 +91,18 @@ class SQLiteBroker:
         conn.executescript(_SCHEMA)
         # migrations for databases created by older Ferry versions
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(ferry_tasks)")}
-        for coldef in ("chain TEXT", "chord_id TEXT", "chord_index INTEGER"):
+        for coldef in (
+            "chain TEXT",
+            "chord_id TEXT",
+            "chord_index INTEGER",
+            "dedupe_key TEXT",
+            "result_expired INTEGER NOT NULL DEFAULT 0",
+        ):
             if coldef.split()[0] not in cols:
                 conn.execute(f"ALTER TABLE ferry_tasks ADD COLUMN {coldef}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ferry_dedupe ON ferry_tasks (dedupe_key, status)"
+        )
         conn.commit()
 
     def close(self) -> None:
@@ -114,17 +127,29 @@ class SQLiteBroker:
         chain: str | list | None = None,
         chord_id: str | None = None,
         chord_index: int | None = None,
+        dedupe_key: str | None = None,
     ) -> str:
         """Enqueue a task. ``task_id`` lets callers pre-assign ids (used by
         canvases); ``chain`` is a JSON list of serialized signatures to run
         after this task succeeds; ``chord_id``/``chord_index`` attach the task
-        to a chord barrier."""
+        to a chord barrier. ``dedupe_key`` collapses duplicates: if a task with
+        the same key is still pending (queued/claimed/running), its id is
+        returned instead of enqueuing a new task."""
+        conn = self._connect()
         if scheduled_id is not None:
             # periodic tasks: at most one pending instance per schedule slot
-            row = self._connect().execute(
+            row = conn.execute(
                 "SELECT id FROM ferry_tasks WHERE scheduled_id = ? "
                 "AND status IN ('queued','claimed','running')",
                 (scheduled_id,),
+            ).fetchone()
+            if row:
+                return row["id"]
+        if dedupe_key is not None:
+            row = conn.execute(
+                "SELECT id FROM ferry_tasks WHERE dedupe_key = ? "
+                "AND status IN ('queued','claimed','running')",
+                (dedupe_key,),
             ).fetchone()
             if row:
                 return row["id"]
@@ -132,12 +157,12 @@ class SQLiteBroker:
             task_id = uuid.uuid4().hex
         if chain is not None and not isinstance(chain, str):
             chain = dumps(chain)
-        self._connect().execute(
+        conn.execute(
             """INSERT INTO ferry_tasks
                (id, queue, task_name, args, kwargs, priority,
                 max_retries, eta, scheduled_id, created_at,
-                chain, chord_id, chord_index)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                chain, chord_id, chord_index, dedupe_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 queue,
@@ -152,9 +177,10 @@ class SQLiteBroker:
                 chain,
                 chord_id,
                 chord_index,
+                dedupe_key,
             ),
         )
-        self._connect().commit()
+        conn.commit()
         return task_id
 
     # -- consuming ------------------------------------------------------------
@@ -261,6 +287,65 @@ class SQLiteBroker:
         conn.commit()
         return {"remaining": remaining, "body": row["body"], "task_ids": row["task_ids"]}
 
+    # -- control plane: queue pause/resume ---------------------------------------
+    def pause_queue(self, queue: str) -> None:
+        """Pause a queue: workers skip it until :meth:`resume_queue` is called."""
+        self._connect().execute(
+            "INSERT OR REPLACE INTO ferry_meta (key, value) VALUES (?, '1')",
+            (f"queue_paused:{queue}",),
+        )
+        self._connect().commit()
+
+    def resume_queue(self, queue: str) -> None:
+        self._connect().execute(
+            "DELETE FROM ferry_meta WHERE key = ?", (f"queue_paused:{queue}",)
+        )
+        self._connect().commit()
+
+    def paused_queues(self) -> list[str]:
+        prefix = "queue_paused:"
+        return sorted(
+            r["key"][len(prefix):]
+            for r in self._connect().execute(
+                "SELECT key FROM ferry_meta WHERE key LIKE 'queue_paused:%'"
+            ).fetchall()
+        )
+
+    # -- control plane: result expiry --------------------------------------------
+    def expire_results(self, older_than_seconds: float) -> int:
+        """Drop result payloads of done tasks older than ``older_than_seconds``.
+
+        The task rows stay (for history); ``result_expired`` is set so
+        ``AsyncResult.get()`` raises :class:`ResultExpired` instead of
+        returning a stale payload."""
+        from datetime import timedelta
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)).isoformat()
+        cur = self._connect().execute(
+            """UPDATE ferry_tasks SET result=NULL, result_expired=1
+               WHERE status='done' AND result IS NOT NULL
+                 AND result_expired=0 AND finished_at < ?""",
+            (cutoff,),
+        )
+        n = cur.rowcount
+        self._connect().commit()
+        return n
+
+    # -- control plane: bulk retry -------------------------------------------------
+    def retry_dead(self, queue: str | None = None) -> int:
+        """Requeue every failed/dead task (optionally limited to one queue)."""
+        q = """UPDATE ferry_tasks
+               SET status='queued', attempts=0, error=NULL, eta=NULL,
+                   worker_id=NULL, claimed_at=NULL, finished_at=NULL
+               WHERE status IN ('failed','dead')"""
+        params: list = []
+        if queue:
+            q += " AND queue=?"
+            params.append(queue)
+        cur = self._connect().execute(q, params)
+        self._connect().commit()
+        return cur.rowcount
+
     # -- workers ---------------------------------------------------------------
     def heartbeat(self, worker_id: str, queues: list[str], concurrency: int, hostname: str) -> None:
         self._connect().execute(
@@ -335,7 +420,12 @@ class SQLiteBroker:
             ).fetchall()
         ]
         workers = self.list_workers()
-        return {"tasks": counts, "queues": queues, "workers": workers}
+        return {
+            "tasks": counts,
+            "queues": queues,
+            "workers": workers,
+            "paused": self.paused_queues(),
+        }
 
     def throughput(self, minutes: int = 60) -> list[dict]:
         """Finished tasks per minute for the last ``minutes`` minutes (for charts)."""

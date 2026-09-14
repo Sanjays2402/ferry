@@ -47,6 +47,9 @@ Most task queues make you choose: **simple** (a Redis list and hope) or **seriou
 | Observability | Events API (`task_enqueued/succeeded/failed/dead`), live dashboard |
 | Payloads | JSON with datetime/date/UUID/bytes/set support; strict errors on the rest |
 | Canvases | `chain`, `group`, `chord` with `Task.s()`/`Task.si()` signatures |
+| Queue control | Pause/resume queues — workers skip paused queues until resumed |
+| Deduplication | `dedupe_key` on `apply_async` collapses pending duplicates into one task |
+| Result TTL | `Ferry(result_ttl=…)` expires old result payloads; `get()` raises `ResultExpired` |
 | Brokers | SQLite out of the box (WAL mode); Redis via `redis://` URLs |
 
 ## Architecture
@@ -66,13 +69,13 @@ ferry/
 ├── worker.py          thread-pool worker, retries, graceful shutdown
 ├── scheduler.py       beat: cron scheduling + stale-claim recovery
 ├── cron.py            cron expression parser
-├── results.py         AsyncResult / TaskFailed
+├── results.py         AsyncResult / TaskFailed / ResultExpired
 ├── events.py          in-process lifecycle event bus
 ├── dashboard.py       FastAPI app + WebSocket live feed
 ├── static/            dashboard UI (no build step)
-├── cli.py             `ferry worker|beat|dashboard|stats|purge`
+├── cli.py             `ferry worker|beat|dashboard|stats|purge|pause|resume|retry-dead`
 └── serialization.py   strict JSON codec for args/results
-tests/                 57 tests: broker, worker, retries, cron, beat, dashboard, redis
+tests/                 100 tests: broker, worker, retries, cron, beat, dashboard, canvas, control plane, redis
 examples/              quickstart, fan-out/fan-in
 ```
 
@@ -94,7 +97,35 @@ Enqueue with overrides per call:
 
 ```python
 send_email.apply_async(args=("a@b.c",), kwargs={"subject": "hi"},
-                       queue="bulk", priority=1, countdown=3600)
+                       queue="bulk", priority=1, countdown=3600,
+                       dedupe_key="welcome:a@b.c")  # collapse duplicates
+```
+
+## Control plane: pause, dedupe, result TTL
+
+Beyond enqueue-and-forget, Ferry gives you runtime control over queues and tasks:
+
+```python
+# pause a queue: workers skip it, tasks pile up untouched
+app.broker.pause_queue("emails")
+app.broker.resume_queue("emails")
+
+# dedupe: while a task with this key is pending, re-enqueueing
+# returns the existing task id instead of creating a duplicate
+send_email.apply_async(args=("a@b.c",), dedupe_key="welcome:a@b.c")
+
+# result TTL: the beat drops result payloads older than this;
+# AsyncResult.get() then raises ResultExpired (rows stay for history)
+app = Ferry("myapp", result_ttl=7 * 24 * 3600)
+```
+
+Failed work is recoverable in bulk, from the CLI or the dashboard:
+
+```bash
+ferry pause emails              # stop a noisy queue without killing workers
+ferry resume emails
+ferry retry-dead                # requeue every failed/dead task
+ferry retry-dead --queue emails # …or just one queue's
 ```
 
 ## Workflows: chain, group, chord
@@ -138,6 +169,8 @@ Semantics worth knowing:
 ## Dashboard
 
 `pip install "ferry[dashboard]"`, then `ferry dashboard`. You get queue depth, a per-minute throughput chart, a filterable task table with one-click retry of dead tasks, queue purge, and a live worker roster — all pushed over a WebSocket, no page reloads.
+
+Click any task to open its inspector: full arguments, result or traceback, and a status timeline. Queues can be paused and resumed from the dashboard, dead tasks retried individually, in bulk, or all at once.
 
 ![Ferry dashboard](docs/dashboard.png)
 

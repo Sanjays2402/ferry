@@ -51,6 +51,22 @@ class Worker:
         self._pool: concurrent.futures.ThreadPoolExecutor | None = None
         self._inflight = 0
         self._inflight_lock = threading.Lock()
+        self._paused_at = 0.0
+        self._paused: set[str] = set()
+
+    def _active_queues(self) -> list[str]:
+        """Queues this worker may claim from right now (paused ones excluded).
+
+        The paused set is refreshed at most every 2 seconds so the hot claim
+        loop doesn't hit the broker on every poll."""
+        now = time.monotonic()
+        if now - self._paused_at > 2.0:
+            try:
+                self._paused = set(self.app.broker.paused_queues())
+            except Exception:  # pragma: no cover - broker hiccup: keep going
+                log.exception("paused-queue check failed")
+            self._paused_at = now
+        return [q for q in self.queues if q not in self._paused]
 
     # -- lifecycle ------------------------------------------------------------
     def run(self) -> None:
@@ -86,14 +102,16 @@ class Worker:
         )
         try:
             while time.monotonic() < deadline:
-                task = self.app.broker.claim(self.queues, self.worker_id)
+                queues = self._active_queues()
+                task = self.app.broker.claim(queues, self.worker_id) if queues else None
                 if task is None:
                     # nothing visible right now; sleep briefly, then double-check
                     # before giving up (a retry's backoff may elapse while we sleep)
                     time.sleep(self.poll_interval)
                     if self._inflight != 0:
                         continue
-                    task = self.app.broker.claim(self.queues, self.worker_id)
+                    queues = self._active_queues()
+                    task = self.app.broker.claim(queues, self.worker_id) if queues else None
                     if task is None:
                         break
                 with self._inflight_lock:
@@ -133,7 +151,11 @@ class Worker:
         while not self._stop.is_set():
             task = None
             try:
-                task = self.app.broker.claim(self.queues, self.worker_id)
+                queues = self._active_queues()
+                if not queues:
+                    self._stop.wait(self.poll_interval)
+                    continue
+                task = self.app.broker.claim(queues, self.worker_id)
             except Exception:
                 log.exception("claim failed; backing off")
                 self._stop.wait(1.0)

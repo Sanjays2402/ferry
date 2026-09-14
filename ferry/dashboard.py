@@ -2,12 +2,16 @@
 
 Endpoints:
     GET /                  the dashboard UI
-    GET /api/stats         task counts, per-queue depth, workers
+    GET /api/stats         task counts, per-queue depth, workers, paused queues
     GET /api/tasks         recent tasks (?status=, ?queue=, ?limit=)
+    GET /api/tasks/{id}    full task detail (decoded args/result/error)
     GET /api/workers       known workers and their heartbeats
     GET /api/throughput    finished tasks per minute (for the chart)
     POST /api/tasks/{id}/retry   requeue a failed/dead task
+    POST /api/tasks/retry-dead   requeue all failed/dead tasks (?queue=)
     POST /api/tasks/purge        delete queued tasks (?queue=)
+    POST /api/queues/{queue}/pause    pause a queue (workers skip it)
+    POST /api/queues/{queue}/resume   resume a paused queue
     WS  /ws                pushes a stats snapshot every second
 
 Run with ``ferry dashboard --broker sqlite:///ferry.db`` (requires the
@@ -66,6 +70,17 @@ def create_app(broker_url: str = "sqlite:///ferry.db"):
                 r["error"] = r["error"][:500] + "…"
         return JSONResponse(rows)
 
+    @app.get("/api/tasks/{task_id}")
+    def task_detail(task_id: str):
+        t = broker.get_task(task_id)
+        if t is None:
+            return JSONResponse({"detail": "unknown task"}, status_code=404)
+        args, kwargs = broker.decode_args(t)
+        t["args_decoded"] = args
+        t["kwargs_decoded"] = kwargs
+        t["result_decoded"] = broker.decode_result(t)
+        return JSONResponse(t)
+
     @app.get("/api/workers")
     def workers():
         return JSONResponse(broker.list_workers())
@@ -79,10 +94,25 @@ def create_app(broker_url: str = "sqlite:///ferry.db"):
         ok = broker.retry_task(task_id)
         return JSONResponse({"retried": ok})
 
+    @app.post("/api/tasks/retry-dead")
+    def retry_dead(queue: str | None = None):
+        n = broker.retry_dead(queue=queue)
+        return JSONResponse({"retried": n})
+
     @app.post("/api/tasks/purge")
     def purge(queue: str | None = None):
         n = broker.purge(queue=queue)
         return JSONResponse({"purged": n})
+
+    @app.post("/api/queues/{queue}/pause")
+    def pause_queue(queue: str):
+        broker.pause_queue(queue)
+        return JSONResponse({"paused": True, "queue": queue})
+
+    @app.post("/api/queues/{queue}/resume")
+    def resume_queue(queue: str):
+        broker.resume_queue(queue)
+        return JSONResponse({"paused": False, "queue": queue})
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):

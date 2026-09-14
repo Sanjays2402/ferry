@@ -16,6 +16,15 @@ class TaskFailed(Exception):
         self.error = error
 
 
+class ResultExpired(Exception):
+    """Raised by ``AsyncResult.get()`` when the task's result payload was
+    expired by the broker's result TTL."""
+
+    def __init__(self, task_id: str):
+        super().__init__(f"result for task {task_id} has expired")
+        self.task_id = task_id
+
+
 class AsyncResult:
     def __init__(self, broker, task_id: str):
         self.broker = broker
@@ -41,6 +50,8 @@ class AsyncResult:
                 raise KeyError(f"unknown task id {self.task_id!r}")
             status = task["status"]
             if status == "done":
+                if task.get("result_expired"):
+                    raise ResultExpired(self.task_id)
                 return self.broker.decode_result(task)
             if status in ("failed", "dead"):
                 raise TaskFailed(self.task_id, task["error"] or "unknown error")
