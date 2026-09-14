@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ferry — live task dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <path d="M3 15.5h18l-2.2 4.4a1.5 1.5 0 0 1-1.34.86H6.54a1.5 1.5 0 0 1-1.34-.86L3 15.5Z" fill="#e8b04b"/>
+        <path d="M12 3v9.5M12 5.5h6.5M12 8.5h5" stroke="#e8b04b" stroke-width="1.8" stroke-linecap="round"/>
+        <path d="M2 12.5c2.5 0 2.5 1.4 5 1.4s2.5-1.4 5-1.4 2.5 1.4 5 1.4 2.5-1.4 5-1.4" stroke="#5b6b8c" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+    </span>
+    <div>
+      <h1>Ferry</h1>
+      <p class="subtitle">live task dashboard</p>
+    </div>
+  </div>
+  <div class="conn">
+    <span id="conn-dot" class="dot"></span>
+    <span id="conn-text">connecting…</span>
+  </div>
+</header>
+
+<main>
+  <section class="cards" id="cards">
+    <div class="card"><p class="card-label">Queued</p><p class="card-value" id="c-queued">–</p></div>
+    <div class="card"><p class="card-label">Active</p><p class="card-value" id="c-active">–</p></div>
+    <div class="card"><p class="card-label">Done</p><p class="card-value" id="c-done">–</p></div>
+    <div class="card"><p class="card-label">Dead-letter</p><p class="card-value warn" id="c-dead">–</p></div>
+    <div class="card"><p class="card-label">Workers</p><p class="card-value" id="c-workers">–</p></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Throughput</h2>
+      <span class="muted">finished tasks per minute · last hour</span>
+    </div>
+    <canvas id="chart" height="120"></canvas>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Queues</h2>
+    </div>
+    <table class="table" id="queues-table">
+      <thead><tr><th>Queue</th><th>Queued</th><th>Active</th><th>Dead</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Tasks</h2>
+      <div class="filters">
+        <select id="f-status">
+          <option value="">all statuses</option>
+          <option value="queued">queued</option>
+          <option value="claimed">claimed</option>
+          <option value="running">running</option>
+          <option value="done">done</option>
+          <option value="failed">failed</option>
+          <option value="dead">dead</option>
+        </select>
+        <input id="f-queue" type="text" placeholder="queue name…">
+        <button id="f-refresh" class="btn">Refresh</button>
+      </div>
+    </div>
+    <table class="table" id="tasks-table">
+      <thead><tr><th>Task</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Worker</th><th>Finished</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Workers</h2></div>
+    <table class="table" id="workers-table">
+      <thead><tr><th>Worker</th><th>Queues</th><th>Concurrency</th><th>Last heartbeat</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
