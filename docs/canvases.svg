@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="470" viewBox="0 0 1400 470">
+  <defs>
+    <marker id="c-gold" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#e8b04b"/>
+    </marker>
+    <marker id="c-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5aa9e6"/>
+    </marker>
+    <style>
+      .sans { font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
+      .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="470" rx="16" fill="#0d1117"/>
+
+  <!-- ============ chain ============ -->
+  <rect x="30" y="30" width="420" height="410" rx="12" fill="#161b26" stroke="#2a3348"/>
+  <text x="60" y="72" fill="#e8b04b" font-size="17" class="mono" font-weight="600">chain</text>
+  <text x="60" y="96" fill="#8b96ad" font-size="12" class="sans">app.chain(a.s(), b.s(), c.s())</text>
+
+  <rect x="55" y="170" width="100" height="48" rx="8" fill="#1c2331" stroke="#e8b04b"/>
+  <text x="105" y="199" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">add(2, 3)</text>
+  <rect x="185" y="170" width="100" height="48" rx="8" fill="#1c2331" stroke="#e8b04b"/>
+  <text x="235" y="199" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">double(x)</text>
+  <rect x="315" y="170" width="110" height="48" rx="8" fill="#1c2331" stroke="#e8b04b"/>
+  <text x="370" y="199" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">add(x, y=1)</text>
+
+  <line x1="155" y1="194" x2="179" y2="194" stroke="#e8b04b" stroke-width="2" marker-end="url(#c-gold)"/>
+  <text x="167" y="184" text-anchor="middle" fill="#e8b04b" font-size="12" class="mono">5</text>
+  <line x1="285" y1="194" x2="309" y2="194" stroke="#e8b04b" stroke-width="2" marker-end="url(#c-gold)"/>
+  <text x="297" y="184" text-anchor="middle" fill="#e8b04b" font-size="12" class="mono">10</text>
+  <text x="370" y="240" text-anchor="middle" fill="#3fb96f" font-size="13" class="mono">= 11</text>
+
+  <text x="60" y="330" fill="#e6eaf2" font-size="14" class="sans">Sequential.</text>
+  <text x="60" y="354" fill="#8b96ad" font-size="13" class="sans">Each result feeds the next link.</text>
+  <text x="60" y="378" fill="#8b96ad" font-size="13" class="sans">Stops at the first failure.</text>
+
+  <!-- ============ group ============ -->
+  <rect x="470" y="30" width="420" height="410" rx="12" fill="#161b26" stroke="#2a3348"/>
+  <text x="500" y="72" fill="#5aa9e6" font-size="17" class="mono" font-weight="600">group</text>
+  <text x="500" y="96" fill="#8b96ad" font-size="12" class="sans">app.group(f.s(1), f.s(2), f.s(3))</text>
+
+  <rect x="490" y="176" width="104" height="48" rx="8" fill="#1c2331" stroke="#5aa9e6"/>
+  <text x="542" y="205" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">group(…)</text>
+
+  <rect x="644" y="120" width="100" height="44" rx="8" fill="#1c2331" stroke="#2a3348"/>
+  <text x="694" y="148" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">f(1)</text>
+  <rect x="644" y="178" width="100" height="44" rx="8" fill="#1c2331" stroke="#2a3348"/>
+  <text x="694" y="206" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">f(2)</text>
+  <rect x="644" y="236" width="100" height="44" rx="8" fill="#1c2331" stroke="#2a3348"/>
+  <text x="694" y="264" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">f(3)</text>
+
+  <rect x="784" y="176" width="86" height="48" rx="8" fill="#1c2331" stroke="#3fb96f"/>
+  <text x="827" y="205" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">[2,4,6]</text>
+
+  <path d="M594,190 C620,190 620,142 638,142" fill="none" stroke="#5aa9e6" stroke-width="2" marker-end="url(#c-blue)"/>
+  <path d="M594,200 L638,200" fill="none" stroke="#5aa9e6" stroke-width="2" marker-end="url(#c-blue)"/>
+  <path d="M594,210 C620,210 620,258 638,258" fill="none" stroke="#5aa9e6" stroke-width="2" marker-end="url(#c-blue)"/>
+  <path d="M744,142 C770,142 770,190 778,196" fill="none" stroke="#3fb96f" stroke-width="2" marker-end="url(#c-gold)"/>
+  <path d="M744,200 L778,200" fill="none" stroke="#3fb96f" stroke-width="2" marker-end="url(#c-gold)"/>
+  <path d="M744,258 C770,258 770,210 778,204" fill="none" stroke="#3fb96f" stroke-width="2" marker-end="url(#c-gold)"/>
+
+  <text x="500" y="330" fill="#e6eaf2" font-size="14" class="sans">Parallel.</text>
+  <text x="500" y="354" fill="#8b96ad" font-size="13" class="sans">Fan out, run together,</text>
+  <text x="500" y="378" fill="#8b96ad" font-size="13" class="sans">results collected in order.</text>
+
+  <!-- ============ chord ============ -->
+  <rect x="910" y="30" width="420" height="410" rx="12" fill="#161b26" stroke="#2a3348"/>
+  <text x="940" y="72" fill="#3fb96f" font-size="17" class="mono" font-weight="600">chord</text>
+  <text x="940" y="96" fill="#8b96ad" font-size="12" class="sans">app.chord([a.s(), b.s()], total.s())</text>
+
+  <rect x="940" y="120" width="110" height="44" rx="8" fill="#1c2331" stroke="#2a3348"/>
+  <text x="995" y="148" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">add(1, 2)</text>
+  <rect x="940" y="178" width="110" height="44" rx="8" fill="#1c2331" stroke="#2a3348"/>
+  <text x="995" y="206" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">add(3, 4)</text>
+  <rect x="940" y="236" width="110" height="44" rx="8" fill="#1c2331" stroke="#2a3348"/>
+  <text x="995" y="264" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">double(5)</text>
+
+  <rect x="1090" y="112" width="12" height="176" rx="6" fill="#e8b04b" opacity="0.85"/>
+  <line x1="1050" y1="142" x2="1084" y2="142" stroke="#e8b04b" stroke-width="2" marker-end="url(#c-gold)"/>
+  <line x1="1050" y1="200" x2="1084" y2="200" stroke="#e8b04b" stroke-width="2" marker-end="url(#c-gold)"/>
+  <line x1="1050" y1="258" x2="1084" y2="258" stroke="#e8b04b" stroke-width="2" marker-end="url(#c-gold)"/>
+
+  <line x1="1102" y1="200" x2="1140" y2="200" stroke="#3fb96f" stroke-width="2" marker-end="url(#c-gold)"/>
+  <text x="1195" y="162" text-anchor="middle" fill="#3fb96f" font-size="11" class="mono">[3, 7, 10]</text>
+  <rect x="1140" y="176" width="110" height="48" rx="8" fill="#1c2331" stroke="#3fb96f"/>
+  <text x="1195" y="205" text-anchor="middle" fill="#e6eaf2" font-size="13" class="mono">total(xs)</text>
+  <text x="1195" y="240" text-anchor="middle" fill="#3fb96f" font-size="13" class="mono">= 20</text>
+
+  <text x="940" y="330" fill="#e6eaf2" font-size="14" class="sans">Barrier + callback.</text>
+  <text x="940" y="354" fill="#8b96ad" font-size="13" class="sans">Callback fires exactly once with</text>
+  <text x="940" y="378" fill="#8b96ad" font-size="13" class="sans">the header results as a list.</text>
+</svg>

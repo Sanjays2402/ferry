@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="380" viewBox="0 0 960 380">
+  <defs>
+    <style>
+      .sans { font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
+      .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="960" height="380" rx="14" fill="#0d1117"/>
+
+  <!-- title bar -->
+  <rect width="960" height="48" rx="14" fill="#161b26"/>
+  <rect y="34" width="960" height="14" fill="#161b26"/>
+  <circle cx="34" cy="24" r="7" fill="#e5605e"/>
+  <circle cx="58" cy="24" r="7" fill="#e8b04b"/>
+  <circle cx="82" cy="24" r="7" fill="#3fb96f"/>
+  <text x="480" y="29" text-anchor="middle" fill="#8b96ad" font-size="13" class="sans">ferry — zsh</text>
+  <line x1="0" y1="48" x2="960" y2="48" stroke="#2a3348"/>
+
+  <!-- body -->
+  <text x="36" y="92" fill="#3fb96f" font-size="14" class="mono">$ <tspan fill="#e6eaf2">ferry worker demo:app --concurrency 4</tspan></text>
+  <text x="36" y="122" fill="#8b96ad" font-size="14" class="mono">INFO  ferry.worker worker started: queues=['emails', 'default'] concurrency=4</text>
+  <text x="36" y="150" fill="#8b96ad" font-size="14" class="mono">INFO  ferry.worker task send_email (6e444399) done in 0.00s</text>
+  <text x="36" y="178" fill="#8b96ad" font-size="14" class="mono">INFO  ferry.worker task render (b3c739e4) done in 0.00s</text>
+
+  <text x="36" y="226" fill="#3fb96f" font-size="14" class="mono">$ <tspan fill="#e6eaf2">ferry stats</tspan></text>
+  <text x="36" y="256" fill="#e6eaf2" font-size="14" class="mono">queued=3 active=0 done=4 dead=1 workers=0</text>
+  <text x="36" y="284" fill="#e6eaf2" font-size="14" class="mono">  queue 'default': queued=1 active=0 dead=1</text>
+  <text x="36" y="312" fill="#e6eaf2" font-size="14" class="mono">  queue 'emails': queued=2 active=0 dead=0</text>
+
+  <text x="36" y="352" fill="#3fb96f" font-size="14" class="mono">$ <tspan fill="#5aa9e6">▊</tspan></text>
+</svg>

@@ -25,6 +25,7 @@ ferry beat myapp:app                     # run the scheduler (one per broker)
 ferry dashboard --port 8000              # live dashboard at localhost:8000
 ```
 
+![ferry worker and stats in the terminal](docs/cli.svg)
 ## Why Ferry
 
 Most task queues make you choose: **simple** (a Redis list and hope) or **serious** (Celery's operational sprawl). Ferry starts with a single SQLite file — no broker to install, no daemon to babysit — and grows with you:
@@ -50,16 +51,7 @@ Most task queues make you choose: **simple** (a Redis list and hope) or **seriou
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    P[Producers<br/>your app] -->|enqueue| B[(Broker<br/>SQLite)]
-    B --> W1[Worker 1]
-    B --> W2[Worker 2]
-    B --> W3[Worker N]
-    Beat[Beat<br/>scheduler] -->|periodic + recovery| B
-    B --> D[Dashboard<br/>FastAPI + WebSocket]
-    W1 & W2 & W3 -->|heartbeat| B
-```
+![Ferry architecture](docs/architecture.svg)
 
 Workers are stateless and horizontally scalable — point any number of them at the same broker file (or Redis URL) and they coordinate through atomic claims. The beat is the only singleton: run exactly one per broker.
 
@@ -140,6 +132,8 @@ Semantics worth knowing:
 - A chain stops at the first failed link — later links are never enqueued, and `ChainResult.get()` raises `TaskFailed` for the failed link.
 - A chord's callback fires exactly once, on whichever worker finishes the last header task (atomic barrier in both brokers). If a header task *dies*, the chord stalls and the callback never runs.
 - Canvases work identically on the SQLite and Redis brokers.
+
+![Ferry canvases: chain, group, chord](docs/canvases.svg)
 
 ## Dashboard
 
