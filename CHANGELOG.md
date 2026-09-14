@@ -2,6 +2,11 @@
 
 All notable changes to Ferry are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Task canvases: `app.chain()`, `app.group()`, `app.chord()` with `Task.s()` / `Task.si()` signatures and per-link `.set()` options; `ChainResult`, `GroupResult`, `ChordResult`. Works on both brokers; chord completion uses an atomic barrier so the callback fires exactly once.
+
 ## [0.1.0] — 2026-09-14
 
 First public release.

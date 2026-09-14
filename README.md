@@ -45,6 +45,7 @@ Most task queues make you choose: **simple** (a Redis list and hope) or **seriou
 | Reliability | Dead-letter queue, stale-claim recovery, graceful worker shutdown |
 | Observability | Events API (`task_enqueued/succeeded/failed/dead`), live dashboard |
 | Payloads | JSON with datetime/date/UUID/bytes/set support; strict errors on the rest |
+| Canvases | `chain`, `group`, `chord` with `Task.s()`/`Task.si()` signatures |
 | Brokers | SQLite out of the box (WAL mode); Redis via `redis://` URLs |
 
 ## Architecture
@@ -103,6 +104,42 @@ Enqueue with overrides per call:
 send_email.apply_async(args=("a@b.c",), kwargs={"subject": "hi"},
                        queue="bulk", priority=1, countdown=3600)
 ```
+
+## Workflows: chain, group, chord
+
+Celery-style canvases for composing tasks. Build signatures with `Task.s(...)` (mutable — the previous result is prepended to args) or `Task.si(...)` (immutable — the result is ignored), and tune each link with `.set(...)`:
+
+```python
+@app.task
+def add(x, y): return x + y
+
+@app.task
+def double(x): return x * 2
+
+@app.task
+def total(xs): return sum(xs)
+
+# chain: add(2, 3) -> double(5) -> 10
+app.chain(add.s(2, 3), double.s()).apply_async().get(timeout=10)
+
+# group: run in parallel, results in order -> [2, 4, 6]
+app.group(double.s(1), double.s(2), double.s(3)).apply_async().get(timeout=10)
+
+# chord: run the header, then total([3, 7, 10]) -> 20
+app.chord([add.s(1, 2), add.s(3, 4), double.s(5)], total.s()).apply_async().get(timeout=10)
+
+# per-link options, just like apply_async
+app.chain(
+    add.s(2, 2).set(queue="math", priority=10),
+    double.s().set(countdown=60),
+).apply_async()
+```
+
+Semantics worth knowing:
+
+- A chain stops at the first failed link — later links are never enqueued, and `ChainResult.get()` raises `TaskFailed` for the failed link.
+- A chord's callback fires exactly once, on whichever worker finishes the last header task (atomic barrier in both brokers). If a header task *dies*, the chord stalls and the callback never runs.
+- Canvases work identically on the SQLite and Redis brokers.
 
 ## Dashboard
 

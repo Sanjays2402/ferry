@@ -58,6 +58,18 @@ return tid
 """
 
 
+_CHORD_DONE_LUA = """
+local rem = redis.call('HINCRBY', KEYS[1], 'remaining', -1)
+if rem == 0 then
+  local body = redis.call('HGET', KEYS[1], 'body')
+  local tids = redis.call('HGET', KEYS[1], 'task_ids')
+  redis.call('DEL', KEYS[1])
+  return {rem, body, tids}
+end
+return {rem}
+"""
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -77,6 +89,7 @@ class RedisBroker:
                 ) from exc
             self._r = redis.Redis.from_url(url, decode_responses=True)
         self._claim = self._r.register_script(_CLAIM_LUA)
+        self._chord_done = self._r.register_script(_CHORD_DONE_LUA)
 
     # -- key helpers -----------------------------------------------------------
     def _k(self, *parts: str) -> str:
@@ -94,6 +107,10 @@ class RedisBroker:
         max_retries: int = 3,
         eta: datetime | None = None,
         scheduled_id: str | None = None,
+        task_id: str | None = None,
+        chain: str | list | None = None,
+        chord_id: str | None = None,
+        chord_index: int | None = None,
     ) -> str:
         from .serialization import dumps
 
@@ -101,7 +118,10 @@ class RedisBroker:
             existing = self._r.hget(self._k("sched"), scheduled_id)
             if existing:
                 return existing
-        task_id = uuid.uuid4().hex
+        if task_id is None:
+            task_id = uuid.uuid4().hex
+        if chain is not None and not isinstance(chain, str):
+            chain = dumps(chain)
         eta_ts = eta.astimezone(timezone.utc).timestamp() if eta else 0
         pipe = self._r.pipeline()
         pipe.hset(
@@ -124,6 +144,9 @@ class RedisBroker:
                 "created_at": _utcnow(),
                 "claimed_at": "",
                 "finished_at": "",
+                "chain": chain or "",
+                "chord_id": chord_id or "",
+                "chord_index": "" if chord_index is None else chord_index,
             },
         )
         if eta_ts and eta_ts > time.time():
@@ -228,6 +251,32 @@ class RedisBroker:
                 recovered += 1
         return recovered
 
+    # -- chords --------------------------------------------------------------------
+    def chord_init(self, chord_id: str, body_json: str, task_ids_json: str) -> None:
+        """Register a chord barrier: ``task_ids_json`` is the header task ids in
+        order, ``body_json`` the serialized callback signature."""
+        self._r.hset(
+            self._k("chord", chord_id),
+            mapping={
+                "remaining": len(json.loads(task_ids_json)),
+                "body": body_json,
+                "task_ids": task_ids_json,
+            },
+        )
+
+    def chord_task_done(self, chord_id: str) -> dict | None:
+        """Atomically count one header task as finished. When the last header
+        finishes, the barrier is removed and the body payload is returned so the
+        caller can enqueue the callback exactly once."""
+        res = self._chord_done(keys=[self._k("chord", chord_id)])
+        if not res:
+            return None
+        out: dict = {"remaining": int(res[0])}
+        if len(res) == 3:
+            out["body"] = res[1]
+            out["task_ids"] = res[2]
+        return out
+
     # -- workers -----------------------------------------------------------------
     def heartbeat(self, worker_id: str, queues: list[str], concurrency: int, hostname: str) -> None:
         self._r.hset(
@@ -273,6 +322,8 @@ class RedisBroker:
         t["priority"] = int(t["priority"])
         t["attempts"] = int(t["attempts"])
         t["max_retries"] = int(t["max_retries"])
+        ci = t.get("chord_index")
+        t["chord_index"] = int(ci) if ci not in (None, "") else None
         return t
 
     def get_task_by_scheduled_id(self, scheduled_id: str) -> dict | None:

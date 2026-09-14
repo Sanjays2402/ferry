@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from .broker import SQLiteBroker, open_broker
+from .canvas import Chain, Chord, Group, Signature
 from .cron import CronSchedule
 from .events import EventBus
 from .results import AsyncResult
@@ -69,6 +70,27 @@ class Task:
 
     def __call__(self, *args, **kwargs):
         return self.func(*args, **kwargs)
+
+    def s(self, *args, **kwargs) -> Signature:
+        """Build a canvas signature. In a chain the previous result is
+        prepended to ``args`` unless the signature is immutable (``.si()``)."""
+        return Signature(
+            self.app,
+            self.name,
+            args=args,
+            kwargs=kwargs,
+            options={
+                "queue": self.queue,
+                "priority": self.priority,
+                "max_retries": self.max_retries,
+            },
+        )
+
+    def si(self, *args, **kwargs) -> Signature:
+        """Immutable signature: a chain result is *not* passed to this task."""
+        sig = self.s(*args, **kwargs)
+        sig.immutable = True
+        return sig
 
 
 class Ferry:
@@ -136,6 +158,18 @@ class Ferry:
         if task is None:
             raise KeyError(f"unknown task {name!r}")
         return task.delay(*args, **kwargs)
+
+    def chain(self, *sigs: Signature) -> Chain:
+        """Build a chain: ``app.chain(add.s(2, 2), double.s()).apply_async()``."""
+        return Chain(self, list(sigs))
+
+    def group(self, *sigs: Signature) -> Group:
+        """Build a group: ``app.group(add.s(1, 1), add.s(2, 2)).apply_async()``."""
+        return Group(self, list(sigs))
+
+    def chord(self, header: list[Signature], body: Signature) -> Chord:
+        """Build a chord: run ``header`` in parallel, then ``body(results)``."""
+        return Chord(self, header, body)
 
     def AsyncResult(self, task_id: str) -> AsyncResult:
         return AsyncResult(self.broker, task_id)

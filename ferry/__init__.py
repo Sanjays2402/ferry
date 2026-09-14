@@ -2,6 +2,15 @@
 
 from .app import Ferry, Task
 from .broker import SQLiteBroker, open_broker
+from .canvas import (
+    Chain,
+    ChainResult,
+    Chord,
+    ChordResult,
+    Group,
+    GroupResult,
+    Signature,
+)
 from .cron import CronSchedule
 from .events import EventBus
 from .results import AsyncResult, TaskFailed
@@ -13,10 +22,17 @@ __version__ = "0.1.0"
 __all__ = [
     "AsyncResult",
     "Beat",
+    "Chain",
+    "ChainResult",
+    "Chord",
+    "ChordResult",
     "CronSchedule",
     "EventBus",
     "Ferry",
+    "Group",
+    "GroupResult",
     "SQLiteBroker",
+    "Signature",
     "Task",
     "TaskFailed",
     "Worker",

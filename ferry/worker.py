@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from .app import Ferry
+from .canvas import fire_continuations
 
 log = logging.getLogger("ferry.worker")
 
@@ -164,6 +165,8 @@ class Worker:
             broker.ack_done(task_id, result)
             events.emit("task_succeeded",
                         {"task_id": task_id, "task_name": name, "elapsed": elapsed})
+            for new_id, new_name in fire_continuations(broker, task, result):
+                events.emit("task_enqueued", {"task_id": new_id, "task_name": new_name})
             log.info("task %s (%s) done in %.2fs", name, task_id[:8], elapsed)
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=5)}"

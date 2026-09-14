@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS ferry_workers (
     started_at  TEXT NOT NULL,
     hostname    TEXT
 );
+CREATE TABLE IF NOT EXISTS ferry_chords (
+    chord_id  TEXT PRIMARY KEY,
+    remaining INTEGER NOT NULL,   -- header tasks still outstanding
+    body      TEXT NOT NULL,      -- serialized callback signature (JSON)
+    task_ids  TEXT NOT NULL       -- header task ids in order (JSON list)
+);
 """
 
 
@@ -79,6 +85,11 @@ class SQLiteBroker:
     def _init_db(self) -> None:
         conn = self._connect()
         conn.executescript(_SCHEMA)
+        # migrations for databases created by older Ferry versions
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(ferry_tasks)")}
+        for coldef in ("chain TEXT", "chord_id TEXT", "chord_index INTEGER"):
+            if coldef.split()[0] not in cols:
+                conn.execute(f"ALTER TABLE ferry_tasks ADD COLUMN {coldef}")
         conn.commit()
 
     def close(self) -> None:
@@ -99,7 +110,15 @@ class SQLiteBroker:
         max_retries: int = 3,
         eta: datetime | None = None,
         scheduled_id: str | None = None,
+        task_id: str | None = None,
+        chain: str | list | None = None,
+        chord_id: str | None = None,
+        chord_index: int | None = None,
     ) -> str:
+        """Enqueue a task. ``task_id`` lets callers pre-assign ids (used by
+        canvases); ``chain`` is a JSON list of serialized signatures to run
+        after this task succeeds; ``chord_id``/``chord_index`` attach the task
+        to a chord barrier."""
         if scheduled_id is not None:
             # periodic tasks: at most one pending instance per schedule slot
             row = self._connect().execute(
@@ -109,12 +128,16 @@ class SQLiteBroker:
             ).fetchone()
             if row:
                 return row["id"]
-        task_id = uuid.uuid4().hex
+        if task_id is None:
+            task_id = uuid.uuid4().hex
+        if chain is not None and not isinstance(chain, str):
+            chain = dumps(chain)
         self._connect().execute(
             """INSERT INTO ferry_tasks
                (id, queue, task_name, args, kwargs, priority,
-                max_retries, eta, scheduled_id, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                max_retries, eta, scheduled_id, created_at,
+                chain, chord_id, chord_index)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 queue,
@@ -126,6 +149,9 @@ class SQLiteBroker:
                 eta.astimezone(timezone.utc).isoformat() if eta else None,
                 scheduled_id,
                 _utcnow(),
+                chain,
+                chord_id,
+                chord_index,
             ),
         )
         self._connect().commit()
@@ -201,6 +227,39 @@ class SQLiteBroker:
         n = len(cur.fetchall())
         self._connect().commit()
         return n
+
+    # -- chords ------------------------------------------------------------------
+    def chord_init(self, chord_id: str, body_json: str, task_ids_json: str) -> None:
+        """Register a chord barrier: ``task_ids_json`` is the header task ids in
+        order, ``body_json`` the serialized callback signature."""
+        import json as _json
+
+        self._connect().execute(
+            "INSERT OR IGNORE INTO ferry_chords (chord_id, remaining, body, task_ids)"
+            " VALUES (?, ?, ?, ?)",
+            (chord_id, len(_json.loads(task_ids_json)), body_json, task_ids_json),
+        )
+        self._connect().commit()
+
+    def chord_task_done(self, chord_id: str) -> dict | None:
+        """Atomically count one header task as finished. When the last header
+        finishes, the barrier is removed and the body payload is returned so the
+        caller can enqueue the callback exactly once."""
+        conn = self._connect()
+        row = conn.execute(
+            """UPDATE ferry_chords SET remaining = remaining - 1
+               WHERE chord_id = ?
+               RETURNING remaining, body, task_ids""",
+            (chord_id,),
+        ).fetchone()
+        if row is None:
+            conn.commit()
+            return None
+        remaining = row["remaining"]
+        if remaining <= 0:
+            conn.execute("DELETE FROM ferry_chords WHERE chord_id = ?", (chord_id,))
+        conn.commit()
+        return {"remaining": remaining, "body": row["body"], "task_ids": row["task_ids"]}
 
     # -- workers ---------------------------------------------------------------
     def heartbeat(self, worker_id: str, queues: list[str], concurrency: int, hostname: str) -> None:
