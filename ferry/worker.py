@@ -12,6 +12,7 @@ Design notes:
 from __future__ import annotations
 
 import concurrent.futures
+import ctypes
 import logging
 import os
 import random
@@ -27,6 +28,81 @@ from .app import Ferry
 from .canvas import fire_continuations
 
 log = logging.getLogger("ferry.worker")
+
+
+class SoftTimeLimitExceeded(Exception):
+    """Raised inside a task's thread when its ``soft_time_limit`` elapses.
+
+    The task may catch this to clean up and finish (or return) normally;
+    uncaught, it fails the task like any other exception."""
+
+
+class TimeLimitExceeded(Exception):
+    """Raised to the worker when a task's ``time_limit`` elapses.
+
+    Python cannot kill threads, so the task's thread is abandoned (daemon)
+    and the task is marked failed. The abandoned thread keeps running
+    detached until the function returns."""
+
+
+def _raise_in_thread(tid: int, exc: type[BaseException]) -> None:
+    """Raise ``exc`` inside the thread ``tid`` (CPython ``ctypes`` injection,
+    the same mechanism Celery uses for soft time limits)."""
+    res = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+        ctypes.c_ulong(tid), ctypes.py_object(exc)
+    )
+    if res == 0:
+        raise RuntimeError("no such thread for exception injection")
+    if res > 1:  # pragma: no cover - defensive; must not corrupt other threads
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(tid), None)
+        raise RuntimeError("exception injection affected multiple threads")
+
+
+def _call_with_limits(func, args, kwargs, soft: float | None, hard: float | None):
+    """Run ``func`` enforcing soft/hard time limits (seconds).
+
+    - No limits: direct call, zero overhead.
+    - Soft limit only: :class:`SoftTimeLimitExceeded` is raised in the task
+      thread; the task may catch it and finish normally.
+    - Hard limit: on expiry the (daemon) thread is abandoned and
+      :class:`TimeLimitExceeded` is raised to the caller.
+    """
+    if soft is None and hard is None:
+        return func(*args, **kwargs)
+    box: dict = {}
+    done = threading.Event()
+
+    def target():
+        box["tid"] = threading.get_ident()
+        try:
+            box["outcome"] = ("ok", func(*args, **kwargs))
+        except BaseException as exc:  # the outcome channel must not lose anything
+            box["outcome"] = ("err", exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=target, daemon=True, name=f"ferry-tl-{uuid.uuid4().hex[:6]}"
+    )
+    thread.start()
+    deadline = None if hard is None else time.monotonic() + hard
+    if soft is not None and not done.wait(soft):
+        # soft limit hit: interrupt the task thread, then keep waiting
+        if thread.is_alive():
+            try:
+                _raise_in_thread(box["tid"], SoftTimeLimitExceeded)
+            except RuntimeError:
+                pass  # thread finished in the race window
+            log.warning("soft time limit (%.1fs) exceeded; raised in task thread",
+                        soft)
+    remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+    if not done.wait(remaining):
+        log.error("hard time limit (%.1fs) exceeded; abandoning task thread", hard)
+        raise TimeLimitExceeded(f"task exceeded time limit of {hard:g}s")
+    kind, value = box["outcome"]
+    if kind == "ok":
+        return value
+    raise value
 
 
 class Worker:
@@ -174,19 +250,29 @@ class Worker:
     def _execute(self, task: dict) -> None:
         task_id, name = task["id"], task["task_name"]
         broker, events = self.app.broker, self.app.events
+        # the task may have been revoked between claim and start
+        if not broker.mark_running(task_id):
+            log.info("task %s (%s) revoked before start; skipping", name, task_id[:8])
+            return
+        entry = self.app.registry.get(name)
         try:
-            broker.mark_running(task_id)
-            func = self.app.registry.get(name)
-            if func is None:
+            if entry is None:
                 raise RuntimeError(f"unknown task {name!r} (not registered on this worker)")
             args, kwargs = broker.decode_args(task)
             events.emit("task_started", {"task_id": task_id, "task_name": name})
             started = time.monotonic()
-            result = func(*args, **kwargs)
+            result = _call_with_limits(
+                entry.func,
+                args,
+                kwargs,
+                soft=task.get("soft_time_limit"),
+                hard=task.get("time_limit"),
+            )
             elapsed = time.monotonic() - started
             broker.ack_done(task_id, result)
             events.emit("task_succeeded",
                         {"task_id": task_id, "task_name": name, "elapsed": elapsed})
+            self._call_hook(entry, "on_success", task_id, result, elapsed)
             for new_id, new_name in fire_continuations(broker, task, result):
                 events.emit("task_enqueued", {"task_id": new_id, "task_name": new_name})
             log.info("task %s (%s) done in %.2fs", name, task_id[:8], elapsed)
@@ -194,12 +280,15 @@ class Worker:
             error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=5)}"
             attempts = task["attempts"]
             max_retries = task["max_retries"]
-            if attempts < max_retries:
-                delay = self._backoff(task, attempts)
+            will_retry = attempts < max_retries
+            self._call_hook(entry, "on_failure", task_id, exc, will_retry)
+            if will_retry:
+                delay = self._backoff(task, attempts, entry)
                 retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
                 broker.ack_failed(task_id, error, retry_at)
                 events.emit("task_retried", {"task_id": task_id, "task_name": name,
                                              "attempt": attempts + 1, "retry_in": delay})
+                self._call_hook(entry, "on_retry", task_id, exc, attempts + 1, delay)
                 log.warning("task %s (%s) failed (attempt %d/%d), retrying in %.1fs: %s",
                             name, task_id[:8], attempts + 1, max_retries + 1, delay, exc)
             else:
@@ -211,9 +300,22 @@ class Worker:
             with self._inflight_lock:
                 self._inflight -= 1
 
-    def _backoff(self, task: dict, attempts: int) -> float:
+    @staticmethod
+    def _call_hook(entry, hook_name: str, *args) -> None:
+        """Invoke a task lifecycle hook. Hook errors are logged, never fatal:
+        a hook must not change the task's outcome."""
+        hook = getattr(entry, hook_name, None) if entry is not None else None
+        if hook is None:
+            return
+        try:
+            hook(*args)
+        except Exception:
+            log.exception("task hook %s raised", hook_name)
+
+    def _backoff(self, task: dict, attempts: int, entry=None) -> float:
         """Exponential backoff with full jitter."""
-        entry = self.app.registry.get(task["task_name"])
+        if entry is None:
+            entry = self.app.registry.get(task["task_name"])
         base = entry.retry_backoff_base if entry else 5.0
         cap = entry.retry_backoff_max if entry else 600.0
         delay = min(base * (2 ** attempts), cap)

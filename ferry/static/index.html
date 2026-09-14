@@ -50,7 +50,7 @@
       <span class="muted">paused queues are skipped by workers</span>
     </div>
     <table class="table" id="queues-table">
-      <thead><tr><th>Queue</th><th>Status</th><th>Queued</th><th>Active</th><th>Dead</th><th></th></tr></thead>
+      <thead><tr><th>Queue</th><th>Status</th><th>Queued</th><th>Active</th><th>Dead</th><th>Rate limit</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </section>
@@ -67,6 +67,7 @@
           <option value="done">done</option>
           <option value="failed">failed</option>
           <option value="dead">dead</option>
+          <option value="revoked">revoked</option>
         </select>
         <input id="f-queue" type="text" placeholder="queue name…">
         <button id="f-refresh" class="btn">Refresh</button>

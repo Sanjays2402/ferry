@@ -8,10 +8,12 @@ Endpoints:
     GET /api/workers       known workers and their heartbeats
     GET /api/throughput    finished tasks per minute (for the chart)
     POST /api/tasks/{id}/retry   requeue a failed/dead task
+    POST /api/tasks/{id}/revoke  cancel a task that hasn't started yet
     POST /api/tasks/retry-dead   requeue all failed/dead tasks (?queue=)
     POST /api/tasks/purge        delete queued tasks (?queue=)
     POST /api/queues/{queue}/pause    pause a queue (workers skip it)
     POST /api/queues/{queue}/resume   resume a paused queue
+    POST /api/queues/{queue}/rate-limit  set/clear a queue's claim rate
     WS  /ws                pushes a stats snapshot every second
 
 Run with ``ferry dashboard --broker sqlite:///ferry.db`` (requires the
@@ -94,6 +96,11 @@ def create_app(broker_url: str = "sqlite:///ferry.db"):
         ok = broker.retry_task(task_id)
         return JSONResponse({"retried": ok})
 
+    @app.post("/api/tasks/{task_id}/revoke")
+    def revoke(task_id: str):
+        ok = broker.revoke(task_id)
+        return JSONResponse({"revoked": ok})
+
     @app.post("/api/tasks/retry-dead")
     def retry_dead(queue: str | None = None):
         n = broker.retry_dead(queue=queue)
@@ -113,6 +120,15 @@ def create_app(broker_url: str = "sqlite:///ferry.db"):
     def resume_queue(queue: str):
         broker.resume_queue(queue)
         return JSONResponse({"paused": False, "queue": queue})
+
+    @app.post("/api/queues/{queue}/rate-limit")
+    def rate_limit(queue: str, payload: dict):
+        rate = payload.get("rate")
+        if rate:
+            broker.set_rate_limit(queue, rate)
+            return JSONResponse({"rate": broker.get_rate_limit(queue), "queue": queue})
+        broker.clear_rate_limit(queue)
+        return JSONResponse({"rate": None, "queue": queue})
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):

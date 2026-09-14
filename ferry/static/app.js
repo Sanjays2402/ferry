@@ -41,21 +41,24 @@
     $("c-done").textContent = t.done;
     $("c-dead").textContent = t.dead + t.failed;
     $("c-workers").textContent = s.workers.length;
-    renderQueues(s.queues, s.paused || []);
+    renderQueues(s.queues, s.paused || [], s.rate_limits || []);
     renderWorkers(s.workers);
   }
 
-  function renderQueues(queues, paused) {
+  function renderQueues(queues, paused, rateLimits) {
     const tb = document.querySelector("#queues-table tbody");
-    tb.innerHTML = queues.length ? "" : '<tr><td colspan="6" class="empty">no queues yet — enqueue a task to begin</td></tr>';
+    tb.innerHTML = queues.length ? "" : '<tr><td colspan="7" class="empty">no queues yet — enqueue a task to begin</td></tr>';
     for (const q of queues) {
       const isPaused = paused.includes(q.queue);
+      const rate = rateLimits[q.queue];
       const tr = document.createElement("tr");
       tr.innerHTML =
         `<td class="mono">${esc(q.queue)}</td>` +
         `<td>${isPaused ? '<span class="pill paused">paused</span>' : '<span class="pill active">active</span>'}</td>` +
         `<td>${q.queued}</td><td>${q.active}</td><td>${q.dead}</td>` +
+        `<td class="mono">${rate ? esc(rate) + ` <button class="btn small" data-rate-clear="${esc(q.queue)}" title="clear rate limit">✕</button>` : '<span class="muted">—</span>'}</td>` +
         `<td class="actions">` +
+        `<button class="btn small" data-rate="${esc(q.queue)}">rate limit</button>` +
         (isPaused
           ? `<button class="btn small" data-resume="${esc(q.queue)}">resume</button>`
           : `<button class="btn small" data-pause="${esc(q.queue)}">pause</button>`) +
@@ -82,6 +85,26 @@
         toast(`queue "${b.dataset.resume}" resumed`);
       })
     );
+    tb.querySelectorAll("[data-rate]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        const rate = prompt(`Rate limit for queue "${b.dataset.rate}" (e.g. 100/s, 10/m, 5/h):`, "60/m");
+        if (rate === null) return;
+        const r = await (await fetch("/api/queues/" + encodeURIComponent(b.dataset.rate) + "/rate-limit", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rate: rate.trim() || null }),
+        })).json();
+        toast(r.rate ? `queue "${b.dataset.rate}" limited to ${r.rate}` : `rate limit cleared on "${b.dataset.rate}"`, r.rate ? "" : "warn");
+      })
+    );
+    tb.querySelectorAll("[data-rate-clear]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        await fetch("/api/queues/" + encodeURIComponent(b.dataset.rateClear) + "/rate-limit", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rate: null }),
+        });
+        toast(`rate limit cleared on "${b.dataset.rateClear}"`);
+      })
+    );
   }
 
   function renderWorkers(workers) {
@@ -104,6 +127,11 @@
     const qs = new URLSearchParams({ limit: "100" });
     if (status) qs.set("status", status);
     if (queue) qs.set("queue", queue);
+    // stats snapshot over HTTP too: keeps the cards/queues fresh when the
+    // websocket is down (the socket just makes it live between polls)
+    try {
+      renderStats(await (await fetch("/api/stats")).json());
+    } catch (e) { /* websocket covers the live path */ }
     const tasks = await (await fetch("/api/tasks?" + qs)).json();
     const tb = document.querySelector("#tasks-table tbody");
     tb.innerHTML = tasks.length ? "" : '<tr><td colspan="8" class="empty">no tasks match</td></tr>';
@@ -113,6 +141,8 @@
       tr.classList.add("clickable");
       const retryBtn = (t.status === "failed" || t.status === "dead")
         ? `<button class="btn small" data-retry="${t.id}">retry</button>` : "";
+      const revokeBtn = t.status === "queued"
+        ? `<button class="btn small danger" data-revoke="${t.id}">revoke</button>` : "";
       tr.innerHTML =
         `<td><input type="checkbox" class="sel" ${selected.has(t.id) ? "checked" : ""}></td>` +
         `<td class="mono" title="${esc(t.id)}">${esc(t.task_name)}<br><span class="muted">${esc(t.id.slice(0, 8))}</span></td>` +
@@ -121,7 +151,7 @@
         `<td>${t.attempts}/${t.max_retries}</td>` +
         `<td class="mono">${esc((t.worker_id || "—").slice(0, 18))}</td>` +
         `<td>${t.finished_at ? relTime(t.finished_at) : "—"}</td>` +
-        `<td>${retryBtn}</td>`;
+        `<td>${retryBtn}${revokeBtn}</td>`;
       tb.appendChild(tr);
     }
     tb.querySelectorAll("tr[data-task-id]").forEach((tr) => {
@@ -142,6 +172,15 @@
         ev.stopPropagation();
         const r = await (await fetch(`/api/tasks/${b.dataset.retry}/retry`, { method: "POST" })).json();
         toast(r.retried ? "task requeued" : "task no longer retryable", r.retried ? "" : "warn");
+        refreshTables();
+      })
+    );
+    tb.querySelectorAll("[data-revoke]").forEach((b) =>
+      b.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        if (!confirm("Revoke this task? It will never run.")) return;
+        const r = await (await fetch(`/api/tasks/${b.dataset.revoke}/revoke`, { method: "POST" })).json();
+        toast(r.revoked ? "task revoked" : "task already started or finished", r.revoked ? "" : "warn");
         refreshTables();
       })
     );
@@ -198,6 +237,9 @@
       kv("priority", t.priority) +
       kv("attempts", `${t.attempts} / ${t.max_retries}`) +
       kv("worker", t.worker_id || "—") +
+      (t.time_limit || t.soft_time_limit
+        ? kv("time limits", `soft ${t.soft_time_limit ?? "—"}s / hard ${t.time_limit ?? "—"}s`)
+        : "") +
       `</div>` +
       (timeline ? `<h3>Timeline</h3><div class="tl">${timeline}</div>` : "") +
       `<h3>Arguments</h3><pre class="code">${esc(JSON.stringify({ args: t.args_decoded, kwargs: t.kwargs_decoded }, null, 2))}</pre>`;
@@ -207,7 +249,17 @@
       html += `<p class="muted">result payload expired (result TTL)</p>`;
     if (t.error)
       html += `<h3>Error</h3><pre class="code error">${esc(t.error)}</pre>`;
+    if (t.status === "queued")
+      html += `<div class="d-actions"><button class="btn danger" id="d-revoke">Revoke task</button></div>`;
     $("d-body").innerHTML = html;
+    const dr = $("d-revoke");
+    if (dr) dr.addEventListener("click", async () => {
+      if (!confirm("Revoke this task? It will never run.")) return;
+      const r = await (await fetch(`/api/tasks/${t.id}/revoke`, { method: "POST" })).json();
+      toast(r.revoked ? "task revoked" : "task already started or finished", r.revoked ? "" : "warn");
+      closeDrawer();
+      refreshTables();
+    });
     $("drawer").classList.add("open");
     $("drawer").setAttribute("aria-hidden", "false");
     $("drawer-scrim").classList.remove("hidden");

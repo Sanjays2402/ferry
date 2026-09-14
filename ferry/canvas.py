@@ -134,6 +134,8 @@ def _enqueue_sig(
         chain=chain,
         chord_id=chord_id,
         chord_index=chord_index,
+        time_limit=opts.get("time_limit"),
+        soft_time_limit=opts.get("soft_time_limit"),
     )
 
 

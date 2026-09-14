@@ -1,0 +1,15 @@
+
+[dashboard]
+fastapi>=0.110
+uvicorn>=0.29
+
+[dev]
+pytest>=8.0
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+fakeredis[lua]>=2.20
+ruff>=0.4
+
+[redis]
+redis>=5.0

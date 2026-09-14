@@ -1,3 +1,40 @@
+Metadata-Version: 2.4
+Name: ferry
+Version: 0.1.0
+Summary: A lightweight distributed task queue for Python. SQLite-simple, production-serious.
+Author: Sanjay Santhanam
+License: MIT
+Project-URL: Homepage, https://github.com/Sanjays2402/ferry
+Project-URL: Repository, https://github.com/Sanjays2402/ferry
+Project-URL: Issues, https://github.com/Sanjays2402/ferry/issues
+Keywords: task-queue,background-jobs,workers,distributed-systems,scheduler
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Topic :: System :: Distributed Computing
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Provides-Extra: dashboard
+Requires-Dist: fastapi>=0.110; extra == "dashboard"
+Requires-Dist: uvicorn>=0.29; extra == "dashboard"
+Provides-Extra: redis
+Requires-Dist: redis>=5.0; extra == "redis"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: fastapi>=0.110; extra == "dev"
+Requires-Dist: uvicorn>=0.29; extra == "dev"
+Requires-Dist: httpx>=0.27; extra == "dev"
+Requires-Dist: fakeredis[lua]>=2.20; extra == "dev"
+Requires-Dist: ruff>=0.4; extra == "dev"
+Dynamic: license-file
+
 # Ferry ⛴
 
 [![CI](https://github.com/Sanjays2402/ferry/actions/workflows/ci.yml/badge.svg)](https://github.com/Sanjays2402/ferry/actions/workflows/ci.yml)
@@ -25,7 +62,6 @@ ferry beat myapp:app                     # run the scheduler (one per broker)
 ferry dashboard --port 8000              # live dashboard at localhost:8000
 ```
 
-![ferry worker and stats in the terminal](docs/cli.svg)
 ## Why Ferry
 
 Most task queues make you choose: **simple** (a Redis list and hope) or **serious** (Celery's operational sprawl). Ferry starts with a single SQLite file — no broker to install, no daemon to babysit — and grows with you:
@@ -46,15 +82,20 @@ Most task queues make you choose: **simple** (a Redis list and hope) or **seriou
 | Reliability | Dead-letter queue, stale-claim recovery, graceful worker shutdown |
 | Observability | Events API (`task_enqueued/succeeded/failed/dead`), live dashboard |
 | Payloads | JSON with datetime/date/UUID/bytes/set support; strict errors on the rest |
-| Canvases | `chain`, `group`, `chord` with `Task.s()`/`Task.si()` signatures |
-| Queue control | Pause/resume queues — workers skip paused queues until resumed |
-| Deduplication | `dedupe_key` on `apply_async` collapses pending duplicates into one task |
-| Result TTL | `Ferry(result_ttl=…)` expires old result payloads; `get()` raises `ResultExpired` |
 | Brokers | SQLite out of the box (WAL mode); Redis via `redis://` URLs |
 
 ## Architecture
 
-![Ferry architecture](docs/architecture.svg)
+```mermaid
+flowchart LR
+    P[Producers<br/>your app] -->|enqueue| B[(Broker<br/>SQLite)]
+    B --> W1[Worker 1]
+    B --> W2[Worker 2]
+    B --> W3[Worker N]
+    Beat[Beat<br/>scheduler] -->|periodic + recovery| B
+    B --> D[Dashboard<br/>FastAPI + WebSocket]
+    W1 & W2 & W3 -->|heartbeat| B
+```
 
 Workers are stateless and horizontally scalable — point any number of them at the same broker file (or Redis URL) and they coordinate through atomic claims. The beat is the only singleton: run exactly one per broker.
 
@@ -65,17 +106,16 @@ ferry/
 ├── __init__.py        public API
 ├── app.py             Ferry app, @app.task / @app.periodic, Task.handle
 ├── broker.py          SQLite broker: enqueue, atomic claim, ack, stats
-├── redis_broker.py    Redis broker: same API, Lua-atomic claims, sorted-set queues
 ├── worker.py          thread-pool worker, retries, graceful shutdown
 ├── scheduler.py       beat: cron scheduling + stale-claim recovery
 ├── cron.py            cron expression parser
-├── results.py         AsyncResult / TaskFailed / ResultExpired
+├── results.py         AsyncResult / TaskFailed
 ├── events.py          in-process lifecycle event bus
 ├── dashboard.py       FastAPI app + WebSocket live feed
 ├── static/            dashboard UI (no build step)
-├── cli.py             `ferry worker|beat|dashboard|stats|purge|pause|resume|retry-dead`
+├── cli.py             `ferry worker|beat|dashboard|stats|purge`
 └── serialization.py   strict JSON codec for args/results
-tests/                 100 tests: broker, worker, retries, cron, beat, dashboard, canvas, control plane, redis
+tests/                 40+ tests: broker, worker, retries, cron, beat, dashboard
 examples/              quickstart, fan-out/fan-in
 ```
 
@@ -88,11 +128,6 @@ examples/              quickstart, fan-out/fan-in
     max_retries=5,        # retries after the first attempt
     retry_backoff_base=5, # seconds; delay = base * 2**attempt, capped…
     retry_backoff_max=600,
-    time_limit=60,        # hard limit: task is failed after 60s (thread abandoned)
-    soft_time_limit=30,   # soft limit: SoftTimeLimitExceeded raised in the task thread
-    on_success=notify,    # on_success(task_id, result, elapsed)
-    on_failure=alert,     # on_failure(task_id, exc, will_retry)
-    on_retry=log_retry,   # on_retry(task_id, exc, attempt, retry_in)
     name="emails.send",   # defaults to module.qualname
 )
 def send_email(to, subject): ...
@@ -102,88 +137,12 @@ Enqueue with overrides per call:
 
 ```python
 send_email.apply_async(args=("a@b.c",), kwargs={"subject": "hi"},
-                       queue="bulk", priority=1, countdown=3600,
-                       dedupe_key="welcome:a@b.c",  # collapse duplicates
-                       time_limit=120)               # override limits per call
+                       queue="bulk", priority=1, countdown=3600)
 ```
-
-## Control plane: pause, dedupe, result TTL
-
-Beyond enqueue-and-forget, Ferry gives you runtime control over queues and tasks:
-
-```python
-# pause a queue: workers skip it, tasks pile up untouched
-app.broker.pause_queue("emails")
-app.broker.resume_queue("emails")
-
-# dedupe: while a task with this key is pending, re-enqueueing
-# returns the existing task id instead of creating a duplicate
-send_email.apply_async(args=("a@b.c",), dedupe_key="welcome:a@b.c")
-
-# result TTL: the beat drops result payloads older than this;
-# AsyncResult.get() then raises ResultExpired (rows stay for history)
-app = Ferry("myapp", result_ttl=7 * 24 * 3600)
-```
-
-Failed work is recoverable in bulk, from the CLI or the dashboard:
-
-```bash
-ferry pause emails              # stop a noisy queue without killing workers
-ferry resume emails
-ferry retry-dead                # requeue every failed/dead task
-ferry retry-dead --queue emails # …or just one queue's
-ferry revoke <task-id>          # cancel a task that hasn't started yet
-ferry rate-limit emails 100/m   # cap a queue at 100 tasks/minute
-ferry rate-limit emails --clear # remove the cap
-```
-
-Rate limits are enforced inside the broker's claim path (token bucket, atomic
-per claim), so they hold across any number of workers. Revoked tasks move to
-the terminal `revoked` state; `AsyncResult.get()` raises `TaskRevoked`.
-
-## Workflows: chain, group, chord
-
-Celery-style canvases for composing tasks. Build signatures with `Task.s(...)` (mutable — the previous result is prepended to args) or `Task.si(...)` (immutable — the result is ignored), and tune each link with `.set(...)`:
-
-```python
-@app.task
-def add(x, y): return x + y
-
-@app.task
-def double(x): return x * 2
-
-@app.task
-def total(xs): return sum(xs)
-
-# chain: add(2, 3) -> double(5) -> 10
-app.chain(add.s(2, 3), double.s()).apply_async().get(timeout=10)
-
-# group: run in parallel, results in order -> [2, 4, 6]
-app.group(double.s(1), double.s(2), double.s(3)).apply_async().get(timeout=10)
-
-# chord: run the header, then total([3, 7, 10]) -> 20
-app.chord([add.s(1, 2), add.s(3, 4), double.s(5)], total.s()).apply_async().get(timeout=10)
-
-# per-link options, just like apply_async
-app.chain(
-    add.s(2, 2).set(queue="math", priority=10),
-    double.s().set(countdown=60),
-).apply_async()
-```
-
-Semantics worth knowing:
-
-- A chain stops at the first failed link — later links are never enqueued, and `ChainResult.get()` raises `TaskFailed` for the failed link.
-- A chord's callback fires exactly once, on whichever worker finishes the last header task (atomic barrier in both brokers). If a header task *dies*, the chord stalls and the callback never runs.
-- Canvases work identically on the SQLite and Redis brokers.
-
-![Ferry canvases: chain, group, chord](docs/canvases.svg)
 
 ## Dashboard
 
 `pip install "ferry[dashboard]"`, then `ferry dashboard`. You get queue depth, a per-minute throughput chart, a filterable task table with one-click retry of dead tasks, queue purge, and a live worker roster — all pushed over a WebSocket, no page reloads.
-
-Click any task to open its inspector: full arguments, result or traceback, and a status timeline. Queues can be paused and resumed from the dashboard, dead tasks retried individually, in bulk, or all at once.
 
 ![Ferry dashboard](docs/dashboard.png)
 
@@ -202,16 +161,6 @@ Measured on a 2-vCPU Linux VM, Python 3.12. Queue overhead per task is well unde
 | | Ferry | Celery | RQ | Dramatiq |
 |---|---|---|---|---|
 | Broker to get started | SQLite file (zero setup) | Redis/RabbitMQ | Redis | Redis/RabbitMQ |
-
-### Scaling past one box
-
-When a single SQLite file isn't enough, point Ferry at Redis — same API, same guarantees:
-
-```python
-app = Ferry("myapp", broker="redis://localhost:6379/0")
-```
-
-Claims run as one atomic Lua script (move due delayed tasks, pop the highest-priority task), so workers stay exactly-once across machines with no extra coordination. Needs `pip install "ferry[redis]"`.
 | Priorities | ✅ | ✅ (kombu) | ❌ | ❌ |
 | Cron scheduling | ✅ built in | ✅ (beat) | ❌ (needs rq-scheduler) | ✅ |
 | Dead-letter queue | ✅ | ✅ | ❌ | ✅ |

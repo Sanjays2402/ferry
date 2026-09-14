@@ -33,6 +33,7 @@ local delayed = KEYS[2]
 local now = tonumber(ARGV[1])
 local worker_id = ARGV[2]
 local claimed_at = ARGV[3]
+local per_sec = tonumber(ARGV[4]) or 0
 
 -- move due delayed tasks into the ready set
 local due = redis.call('ZRANGEBYSCORE', delayed, 0, now, 'LIMIT', 0, 500)
@@ -43,11 +44,29 @@ for i, tid in ipairs(due) do
   redis.call('ZADD', ready, -pr, string.format('%020d', seq) .. ':' .. tid)
 end
 
--- pop the highest-priority ready task
 local members = redis.call('ZRANGE', ready, 0, 0)
 if #members == 0 then
   return nil
 end
+
+-- per-queue rate limit: token bucket checked atomically with the claim
+if per_sec > 0 then
+  local burst = tonumber(ARGV[5]) or per_sec
+  local bucket = KEYS[3]
+  local data = redis.call('HMGET', bucket, 'tokens', 'ts')
+  local tokens = tonumber(data[1])
+  if tokens == nil then tokens = burst end
+  local ts = tonumber(data[2])
+  if ts == nil then ts = now end
+  tokens = math.min(burst, tokens + (now - ts) * per_sec)
+  if tokens < 1 then
+    redis.call('HSET', bucket, 'tokens', tokens, 'ts', now)
+    return nil
+  end
+  redis.call('HSET', bucket, 'tokens', tokens - 1, 'ts', now)
+end
+
+-- pop the highest-priority ready task
 redis.call('ZREM', ready, members[1])
 local tid = string.sub(members[1], 22)
 redis.call('HSET', '""" + _PREFIX + """task:' .. tid,
@@ -55,6 +74,17 @@ redis.call('HSET', '""" + _PREFIX + """task:' .. tid,
 redis.call('HINCRBY', '""" + _PREFIX + """counts', 'queued', -1)
 redis.call('HINCRBY', '""" + _PREFIX + """counts', 'claimed', 1)
 return tid
+"""
+
+
+_MARK_RUNNING_LUA = """
+if redis.call('HGET', KEYS[1], 'status') == 'claimed' then
+  redis.call('HSET', KEYS[1], 'status', 'running')
+  redis.call('HINCRBY', '""" + _PREFIX + """counts', 'claimed', -1)
+  redis.call('HINCRBY', '""" + _PREFIX + """counts', 'running', 1)
+  return 1
+end
+return 0
 """
 
 
@@ -90,6 +120,7 @@ class RedisBroker:
             self._r = redis.Redis.from_url(url, decode_responses=True)
         self._claim = self._r.register_script(_CLAIM_LUA)
         self._chord_done = self._r.register_script(_CHORD_DONE_LUA)
+        self._mark_running = self._r.register_script(_MARK_RUNNING_LUA)
 
     # -- key helpers -----------------------------------------------------------
     def _k(self, *parts: str) -> str:
@@ -112,6 +143,8 @@ class RedisBroker:
         chord_id: str | None = None,
         chord_index: int | None = None,
         dedupe_key: str | None = None,
+        time_limit: float | None = None,
+        soft_time_limit: float | None = None,
     ) -> str:
         from .serialization import dumps
 
@@ -158,6 +191,8 @@ class RedisBroker:
                 "chord_index": "" if chord_index is None else chord_index,
                 "dedupe_key": dedupe_key or "",
                 "result_expired": 0,
+                "time_limit": "" if time_limit is None else time_limit,
+                "soft_time_limit": "" if soft_time_limit is None else soft_time_limit,
             },
         )
         if eta_ts and eta_ts > time.time():
@@ -175,18 +210,53 @@ class RedisBroker:
 
     # -- consuming ---------------------------------------------------------------
     def claim(self, queues: list[str], worker_id: str) -> dict | None:
+        """Claim the highest-priority visible task. Queues with a rate limit
+        (see :meth:`set_rate_limit`) are skipped while their token bucket is
+        empty — enforced atomically inside the claim script."""
         now = time.time()
+        rate_cfg = self._r.hgetall(self._k("rate_limits"))
         for queue in queues:
+            per_sec = 0.0
+            cfg = rate_cfg.get(queue)
+            if cfg:
+                per_sec = float(cfg.split("|", 1)[0])
             task_id = self._claim(
-                keys=[self._k("q", queue), self._k("delayed", queue)],
-                args=[now, worker_id, _utcnow()],
+                keys=[self._k("q", queue), self._k("delayed", queue),
+                      self._k("ratelimit", queue)],
+                args=[now, worker_id, _utcnow(), per_sec, max(1.0, per_sec)],
             )
             if task_id:
                 return self.get_task(task_id)
         return None
 
-    def mark_running(self, task_id: str) -> None:
-        self._set_status(task_id, "running")
+    def mark_running(self, task_id: str) -> bool:
+        """Move a claimed task to running. Returns False if the task is no
+        longer claimed (e.g. revoked between claim and start)."""
+        return bool(self._mark_running(keys=[self._k("task", task_id)]))
+
+    def revoke(self, task_id: str) -> bool:
+        """Cancel a task that hasn't started yet. Returns False if it already
+        started, finished, or doesn't exist."""
+        t = self.get_task(task_id)
+        if not t or t["status"] not in ("queued", "claimed"):
+            return False
+        members = self._r.zrange(self._k("q", t["queue"]), 0, -1)
+        victim = next((m for m in members if m.endswith(":" + task_id)), None)
+        pipe = self._r.pipeline()
+        if victim:
+            pipe.zrem(self._k("q", t["queue"]), victim)
+        pipe.zrem(self._k("delayed", t["queue"]), task_id)
+        dk = self._r.hget(self._k("task", task_id), "dedupe_key")
+        if dk:
+            pipe.hdel(self._k("dedupe"), dk)
+        pipe.hset(
+            self._k("task", task_id),
+            mapping={"finished_at": _utcnow(), "worker_id": "", "claimed_at": ""},
+        )
+        pipe.execute()
+        self._set_status(task_id, "revoked")
+        self._r.zadd(self._k("finished"), {f"{task_id}:revoked": time.time()})
+        return True
 
     def _set_status(self, task_id: str, new: str) -> str:
         """Set a task's status, adjusting counters from its actual previous status."""
@@ -308,6 +378,30 @@ class RedisBroker:
     def paused_queues(self) -> list[str]:
         return sorted(self._r.hkeys(self._k("paused")))
 
+    # -- control plane: per-queue rate limits --------------------------------------
+    def set_rate_limit(self, queue: str, rate: str | float) -> None:
+        """Cap a queue at ``rate`` (e.g. ``"100/s"``, ``"10/m"``, ``"5/h"``).
+        Enforced atomically inside the claim script, so the limit holds across
+        any number of workers."""
+        from .broker import parse_rate
+
+        per_sec, original = parse_rate(rate)
+        self._r.hset(self._k("rate_limits"), queue, f"{per_sec}|{original}")
+
+    def get_rate_limit(self, queue: str) -> str | None:
+        cfg = self._r.hget(self._k("rate_limits"), queue)
+        return cfg.split("|", 1)[1] if cfg else None
+
+    def clear_rate_limit(self, queue: str) -> None:
+        self._r.hdel(self._k("rate_limits"), queue)
+        self._r.delete(self._k("ratelimit", queue))
+
+    def rate_limits(self) -> dict[str, str]:
+        return {
+            q: cfg.split("|", 1)[1]
+            for q, cfg in self._r.hgetall(self._k("rate_limits")).items()
+        }
+
     # -- control plane: result expiry --------------------------------------------
     def expire_results(self, older_than_seconds: float) -> int:
         """Drop result payloads of done tasks older than ``older_than_seconds``.
@@ -387,6 +481,9 @@ class RedisBroker:
         ci = t.get("chord_index")
         t["chord_index"] = int(ci) if ci not in (None, "") else None
         t["result_expired"] = t.get("result_expired") in ("1", 1, True)
+        for f in ("time_limit", "soft_time_limit"):
+            v = t.get(f)
+            t[f] = float(v) if v not in (None, "") else None
         return t
 
     def get_task_by_scheduled_id(self, scheduled_id: str) -> dict | None:
@@ -409,7 +506,8 @@ class RedisBroker:
         return sorted(out, key=lambda t: t["created_at"], reverse=True)[:limit]
 
     def stats(self) -> dict:
-        counts = {s: 0 for s in ("queued", "claimed", "running", "done", "failed", "dead")}
+        counts = {s: 0 for s in ("queued", "claimed", "running", "done",
+                                 "failed", "dead", "revoked")}
         for s, n in self._r.hgetall(self._k("counts")).items():
             counts[s] = int(n)
         queues: dict[str, dict] = {}
@@ -431,7 +529,8 @@ class RedisBroker:
             elif t["status"] == "dead":
                 q["dead"] += 1
         return {"tasks": counts, "queues": sorted(queues.values(), key=lambda q: q["queue"]),
-                "workers": self.list_workers(), "paused": self.paused_queues()}
+                "workers": self.list_workers(), "paused": self.paused_queues(),
+                "rate_limits": self.rate_limits()}
 
     def throughput(self, minutes: int = 60) -> list[dict]:
         cutoff = time.time() - minutes * 60

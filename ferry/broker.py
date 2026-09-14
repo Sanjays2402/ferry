@@ -8,14 +8,42 @@ interface (see ``ferry/redis_broker.py`` when the ``redis`` extra is installed).
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 
 from .serialization import dumps, loads
 
-_STATUSES = ("queued", "claimed", "running", "done", "failed", "dead")
+_STATUSES = ("queued", "claimed", "running", "done", "failed", "dead", "revoked")
+
+_RATE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*/\s*([a-z]+)\s*$", re.IGNORECASE)
+_RATE_UNITS = {
+    "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1,
+    "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60,
+    "h": 3600, "hour": 3600, "hours": 3600,
+    "d": 86400, "day": 86400, "days": 86400,
+}
+
+
+def parse_rate(rate: str | float) -> tuple[float, str]:
+    """Parse a rate like ``"10/m"`` or ``100`` (per second) into
+    ``(tasks_per_second, canonical_string)``."""
+    if isinstance(rate, (int, float)):
+        if rate <= 0:
+            raise ValueError("rate must be positive")
+        return float(rate), f"{rate:g}/s"
+    m = _RATE_RE.match(str(rate))
+    if not m:
+        raise ValueError(f"bad rate {rate!r}: expected like '100/s', '10/m', '5/h'")
+    n, unit = float(m.group(1)), m.group(2).lower()
+    if unit not in _RATE_UNITS:
+        raise ValueError(f"bad rate {rate!r}: unknown unit {m.group(2)!r}")
+    if n <= 0:
+        raise ValueError("rate must be positive")
+    return n / _RATE_UNITS[unit], f"{n:g}/{unit}"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ferry_tasks (
@@ -97,6 +125,8 @@ class SQLiteBroker:
             "chord_index INTEGER",
             "dedupe_key TEXT",
             "result_expired INTEGER NOT NULL DEFAULT 0",
+            "time_limit REAL",
+            "soft_time_limit REAL",
         ):
             if coldef.split()[0] not in cols:
                 conn.execute(f"ALTER TABLE ferry_tasks ADD COLUMN {coldef}")
@@ -128,13 +158,16 @@ class SQLiteBroker:
         chord_id: str | None = None,
         chord_index: int | None = None,
         dedupe_key: str | None = None,
+        time_limit: float | None = None,
+        soft_time_limit: float | None = None,
     ) -> str:
         """Enqueue a task. ``task_id`` lets callers pre-assign ids (used by
         canvases); ``chain`` is a JSON list of serialized signatures to run
         after this task succeeds; ``chord_id``/``chord_index`` attach the task
         to a chord barrier. ``dedupe_key`` collapses duplicates: if a task with
         the same key is still pending (queued/claimed/running), its id is
-        returned instead of enqueuing a new task."""
+        returned instead of enqueuing a new task. ``time_limit`` /
+        ``soft_time_limit`` bound execution time (seconds; enforced by workers)."""
         conn = self._connect()
         if scheduled_id is not None:
             # periodic tasks: at most one pending instance per schedule slot
@@ -161,8 +194,9 @@ class SQLiteBroker:
             """INSERT INTO ferry_tasks
                (id, queue, task_name, args, kwargs, priority,
                 max_retries, eta, scheduled_id, created_at,
-                chain, chord_id, chord_index, dedupe_key)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                chain, chord_id, chord_index, dedupe_key,
+                time_limit, soft_time_limit)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 queue,
@@ -178,6 +212,8 @@ class SQLiteBroker:
                 chord_id,
                 chord_index,
                 dedupe_key,
+                time_limit,
+                soft_time_limit,
             ),
         )
         conn.commit()
@@ -185,29 +221,67 @@ class SQLiteBroker:
 
     # -- consuming ------------------------------------------------------------
     def claim(self, queues: list[str], worker_id: str) -> dict | None:
-        """Atomically claim the highest-priority visible task. Returns None if empty."""
+        """Atomically claim the highest-priority visible task. Returns None if empty.
+
+        Queues with a rate limit (see :meth:`set_rate_limit`) are skipped when
+        their token bucket is empty; a token is consumed for the claimed task's
+        queue. The check-and-consume runs inside the claim transaction, so the
+        limit holds across any number of workers."""
+        if not queues:
+            return None
+        conn = self._connect()
         now = _utcnow()
-        placeholders = ",".join("?" for _ in queues)
-        row = self._connect().execute(
-            f"""UPDATE ferry_tasks SET status='claimed', worker_id=?, claimed_at=?
-                WHERE id = (
-                    SELECT id FROM ferry_tasks
-                    WHERE status='queued' AND queue IN ({placeholders})
-                      AND (eta IS NULL OR eta <= ?)
-                    ORDER BY priority DESC, created_at ASC
-                    LIMIT 1
-                )
-                RETURNING *""",
-            (worker_id, now, *queues, now),
-        ).fetchone()
-        self._connect().commit()
+        now_ts = time.time()
+        # Rate limiting: consume one token per rate-limited queue up front and
+        # drop queues whose bucket is empty. Tokens for queues that don't
+        # produce the claimed task are refunded below, so the limit is exact
+        # even with many workers (writers serialize in SQLite).
+        allowed = [q for q in queues if self._rl_consume(q, now_ts)]
+        row = None
+        if allowed:
+            placeholders = ",".join("?" for _ in allowed)
+            row = conn.execute(
+                f"""UPDATE ferry_tasks SET status='claimed', worker_id=?, claimed_at=?
+                    WHERE id = (
+                        SELECT id FROM ferry_tasks
+                        WHERE status='queued' AND queue IN ({placeholders})
+                          AND (eta IS NULL OR eta <= ?)
+                        ORDER BY priority DESC, created_at ASC
+                        LIMIT 1
+                    )
+                    RETURNING *""",
+                (worker_id, now, *allowed, now),
+            ).fetchone()
+        winner = row["queue"] if row is not None else None
+        for q in allowed:
+            if q != winner:
+                self._rl_refund(q)
+        conn.commit()
         return dict(row) if row else None
 
-    def mark_running(self, task_id: str) -> None:
-        self._connect().execute(
-            "UPDATE ferry_tasks SET status='running' WHERE id=?", (task_id,)
+    def mark_running(self, task_id: str) -> bool:
+        """Move a claimed task to running. Returns False if the task is no
+        longer claimed (e.g. it was revoked between claim and start) — the
+        worker must then skip execution."""
+        cur = self._connect().execute(
+            "UPDATE ferry_tasks SET status='running' WHERE id=? AND status='claimed'",
+            (task_id,),
         )
         self._connect().commit()
+        return cur.rowcount > 0
+
+    def revoke(self, task_id: str) -> bool:
+        """Cancel a task that hasn't started yet. The task moves to the
+        terminal ``revoked`` state; returns False if it already started,
+        finished, or doesn't exist."""
+        cur = self._connect().execute(
+            """UPDATE ferry_tasks SET status='revoked', finished_at=?,
+                   worker_id=NULL, claimed_at=NULL
+               WHERE id=? AND status IN ('queued','claimed')""",
+            (_utcnow(), task_id),
+        )
+        self._connect().commit()
+        return cur.rowcount > 0
 
     def ack_done(self, task_id: str, result) -> None:
         self._connect().execute(
@@ -309,6 +383,95 @@ class SQLiteBroker:
             for r in self._connect().execute(
                 "SELECT key FROM ferry_meta WHERE key LIKE 'queue_paused:%'"
             ).fetchall()
+        )
+
+    # -- control plane: per-queue rate limits --------------------------------------
+    def set_rate_limit(self, queue: str, rate: str | float) -> None:
+        """Cap a queue at ``rate`` (e.g. ``"100/s"``, ``"10/m"``, ``"5/h"``).
+        Workers collectively never claim faster than this; excess tasks wait.
+        The bucket starts full, so a short burst up to one second's worth is
+        allowed."""
+        per_sec, original = parse_rate(rate)
+        self._connect().execute(
+            "INSERT OR REPLACE INTO ferry_meta (key, value) VALUES (?, ?)",
+            (f"queue_rl:{queue}", f"{per_sec}|{original}"),
+        )
+        self._connect().commit()
+
+    def get_rate_limit(self, queue: str) -> str | None:
+        """The configured rate string for a queue, or None if unlimited."""
+        row = self._connect().execute(
+            "SELECT value FROM ferry_meta WHERE key=?", (f"queue_rl:{queue}",)
+        ).fetchone()
+        return row["value"].split("|", 1)[1] if row else None
+
+    def clear_rate_limit(self, queue: str) -> None:
+        self._connect().execute(
+            "DELETE FROM ferry_meta WHERE key IN (?, ?)",
+            (f"queue_rl:{queue}", f"queue_rl_bucket:{queue}"),
+        )
+        self._connect().commit()
+
+    def rate_limits(self) -> dict[str, str]:
+        prefix = "queue_rl:"
+        out = {}
+        for r in self._connect().execute(
+            "SELECT key, value FROM ferry_meta WHERE key LIKE 'queue_rl:%'"
+        ).fetchall():
+            if r["key"].startswith("queue_rl_bucket:"):
+                continue
+            out[r["key"][len(prefix):]] = r["value"].split("|", 1)[1]
+        return out
+
+    def _rl_config(self, queue: str) -> tuple[float, str] | None:
+        row = self._connect().execute(
+            "SELECT value FROM ferry_meta WHERE key=?", (f"queue_rl:{queue}",)
+        ).fetchone()
+        if row is None:
+            return None
+        per_sec, _, original = row["value"].partition("|")
+        return float(per_sec), original
+
+    def _rl_consume(self, queue: str, now_ts: float) -> bool:
+        """Token-bucket consume. True if the queue may claim right now."""
+        cfg = self._rl_config(queue)
+        if cfg is None:
+            return True
+        per_sec, _ = cfg
+        burst = max(1.0, per_sec)
+        key = f"queue_rl_bucket:{queue}"
+        conn = self._connect()
+        row = conn.execute("SELECT value FROM ferry_meta WHERE key=?", (key,)).fetchone()
+        if row is None:
+            tokens, ts = burst, now_ts
+        else:
+            tokens, ts = (float(v) for v in row["value"].split("|"))
+        tokens = min(burst, tokens + (now_ts - ts) * per_sec)
+        ok = tokens >= 1.0
+        if ok:
+            tokens -= 1.0
+        conn.execute(
+            "INSERT OR REPLACE INTO ferry_meta (key, value) VALUES (?, ?)",
+            (key, f"{tokens}|{now_ts}"),
+        )
+        return ok
+
+    def _rl_refund(self, queue: str) -> None:
+        """Return one token (for queues that consumed but didn't claim)."""
+        cfg = self._rl_config(queue)
+        if cfg is None:
+            return
+        per_sec, _ = cfg
+        burst = max(1.0, per_sec)
+        key = f"queue_rl_bucket:{queue}"
+        conn = self._connect()
+        row = conn.execute("SELECT value FROM ferry_meta WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return
+        tokens, ts = row["value"].split("|")
+        conn.execute(
+            "INSERT OR REPLACE INTO ferry_meta (key, value) VALUES (?, ?)",
+            (key, f"{min(burst, float(tokens) + 1.0)}|{ts}"),
         )
 
     # -- control plane: result expiry --------------------------------------------
@@ -425,6 +588,7 @@ class SQLiteBroker:
             "queues": queues,
             "workers": workers,
             "paused": self.paused_queues(),
+            "rate_limits": self.rate_limits(),
         }
 
     def throughput(self, minutes: int = 60) -> list[dict]:

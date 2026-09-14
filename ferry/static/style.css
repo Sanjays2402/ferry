@@ -98,6 +98,7 @@ main { max-width: 1180px; margin: 0 auto; padding: 24px 28px 60px; }
 .status.done { color: var(--green); border-color: #27573c; background: #12271b; }
 .status.failed { color: var(--red); border-color: #5f2c2b; background: #2c1512; }
 .status.dead { color: #fff; border-color: var(--red); background: var(--red); }
+.status.revoked { color: #8b96ad; border-color: #3a4356; background: #1a2030; }
 
 .filters { display: flex; gap: 8px; align-items: center; }
 select, input[type="text"] {
@@ -113,6 +114,7 @@ select, input[type="text"] {
 .btn:hover { background: #2a3550; }
 .btn.small { padding: 4px 10px; font-size: 12px; }
 .btn.danger { color: var(--red); border-color: #5f2c2b; }
+.d-actions { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
 .btn.accent { background: #2a2314; border-color: #5a4a26; color: var(--accent); }
 .btn.accent:hover { background: #38301c; }
 .empty { color: var(--muted); text-align: center; padding: 18px; }

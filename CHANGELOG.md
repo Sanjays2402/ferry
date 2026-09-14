@@ -12,6 +12,10 @@ All notable changes to Ferry are documented here. The format follows [Keep a Cha
 - Result TTL: `Ferry(result_ttl=…)`; the beat drops result payloads older than the TTL and `AsyncResult.get()` raises the new `ResultExpired` (rows stay for history).
 - Bulk retry: `broker.retry_dead([queue])`, `ferry retry-dead [--queue]`, dashboard "Retry all dead" plus bulk retry of selected tasks.
 - Dashboard: click any task for an inspector drawer (arguments, result/traceback, status timeline); queue status badges with pause/resume buttons; bulk-select checkboxes; toast notifications.
+- Task revocation: `broker.revoke(task_id)` moves a not-yet-started task to the terminal `revoked` state (`AsyncResult.get()` raises the new `TaskRevoked`); `ferry revoke <id>`, dashboard revoke buttons on queued tasks and in the inspector. Workers skip tasks revoked between claim and start.
+- Time limits: `@app.task(time_limit=…, soft_time_limit=…)` (overridable per `apply_async` call). The soft limit raises `SoftTimeLimitExceeded` in the task thread (catchable for cleanup); the hard limit abandons the thread and fails the task with `TimeLimitExceeded`.
+- Lifecycle hooks: `on_success(task_id, result, elapsed)`, `on_failure(task_id, exc, will_retry)`, `on_retry(task_id, exc, attempt, retry_in)` on `@app.task`. Hook errors are logged, never fatal.
+- Per-queue rate limits: `broker.set_rate_limit(queue, "100/s" | "10/m" | "5/h")` / `get_rate_limit` / `clear_rate_limit`; `ferry rate-limit <queue> <rate> [--clear]`; dashboard rate-limit column with set/clear. Enforced atomically in the claim path on both brokers, so the cap holds across any number of workers.
 
 ## [0.1.0] — 2026-09-14
 

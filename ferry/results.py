@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-_TERMINAL = ("done", "failed", "dead")
+_TERMINAL = ("done", "failed", "dead", "revoked")
 
 
 class TaskFailed(Exception):
@@ -14,6 +14,14 @@ class TaskFailed(Exception):
         super().__init__(f"task {task_id} failed: {error}")
         self.task_id = task_id
         self.error = error
+
+
+class TaskRevoked(Exception):
+    """Raised by ``AsyncResult.get()`` when the task was revoked before it ran."""
+
+    def __init__(self, task_id: str):
+        super().__init__(f"task {task_id} was revoked before it ran")
+        self.task_id = task_id
 
 
 class ResultExpired(Exception):
@@ -53,6 +61,8 @@ class AsyncResult:
                 if task.get("result_expired"):
                     raise ResultExpired(self.task_id)
                 return self.broker.decode_result(task)
+            if status == "revoked":
+                raise TaskRevoked(self.task_id)
             if status in ("failed", "dead"):
                 raise TaskFailed(self.task_id, task["error"] or "unknown error")
             if timeout is not None and time.monotonic() - start > timeout:

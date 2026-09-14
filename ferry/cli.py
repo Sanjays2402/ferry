@@ -105,6 +105,30 @@ def cmd_retry_dead(args) -> int:
     return 0
 
 
+def cmd_revoke(args) -> int:
+    from .broker import open_broker
+
+    ok = open_broker(args.broker).revoke(args.task_id)
+    print(f"revoked task {args.task_id}" if ok else
+          f"task {args.task_id} could not be revoked (already started, finished, or unknown)")
+    return 0 if ok else 1
+
+
+def cmd_rate_limit(args) -> int:
+    from .broker import open_broker
+
+    broker = open_broker(args.broker)
+    if not args.clear and args.rate is None:
+        raise SystemExit("rate-limit: pass a rate like '100/s', or use --clear")
+    if args.clear:
+        broker.clear_rate_limit(args.queue)
+        print(f"cleared rate limit on queue {args.queue!r}")
+    else:
+        broker.set_rate_limit(args.queue, args.rate)
+        print(f"rate limit on queue {args.queue!r}: {broker.get_rate_limit(args.queue)}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ferry", description="Ferry — lightweight distributed task queue"
@@ -152,6 +176,19 @@ def build_parser() -> argparse.ArgumentParser:
     rd.add_argument("--broker", default="sqlite:///ferry.db")
     rd.add_argument("--queue", default=None)
     rd.set_defaults(func=cmd_retry_dead)
+
+    rv = sub.add_parser("revoke", help="cancel a task that hasn't started yet")
+    rv.add_argument("task_id")
+    rv.add_argument("--broker", default="sqlite:///ferry.db")
+    rv.set_defaults(func=cmd_revoke)
+
+    rl = sub.add_parser("rate-limit", help="cap a queue's claim rate (e.g. '100/s', '10/m')")
+    rl.add_argument("queue")
+    rl.add_argument("rate", nargs="?", default=None,
+                    help="rate like '100/s', '10/m', '5/h' (omit with --clear)")
+    rl.add_argument("--clear", action="store_true", help="remove the rate limit")
+    rl.add_argument("--broker", default="sqlite:///ferry.db")
+    rl.set_defaults(func=cmd_rate_limit)
 
     return p
 

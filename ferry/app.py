@@ -27,7 +27,18 @@ class Task:
         priority: int,
         retry_backoff_base: float,
         retry_backoff_max: float,
+        time_limit: float | None = None,
+        soft_time_limit: float | None = None,
+        on_success: Callable | None = None,
+        on_failure: Callable | None = None,
+        on_retry: Callable | None = None,
     ):
+        if (
+            time_limit is not None
+            and soft_time_limit is not None
+            and soft_time_limit >= time_limit
+        ):
+            raise ValueError("soft_time_limit must be less than time_limit")
         self.app = app
         self.func = func
         self.name = name
@@ -36,6 +47,15 @@ class Task:
         self.priority = priority
         self.retry_backoff_base = retry_backoff_base
         self.retry_backoff_max = retry_backoff_max
+        self.time_limit = time_limit
+        self.soft_time_limit = soft_time_limit
+        # lifecycle hooks (worker-side only, never serialized):
+        #   on_success(task_id, result, elapsed)
+        #   on_failure(task_id, exc, will_retry)
+        #   on_retry(task_id, exc, attempt, retry_in)
+        self.on_success = on_success
+        self.on_failure = on_failure
+        self.on_retry = on_retry
         functools.update_wrapper(self, func)
 
     def delay(self, *args, **kwargs) -> AsyncResult:
@@ -52,13 +72,21 @@ class Task:
         countdown: float | None = None,
         eta: datetime | None = None,
         dedupe_key: str | None = None,
+        time_limit: float | None = None,
+        soft_time_limit: float | None = None,
     ) -> AsyncResult:
         """Enqueue a task. ``dedupe_key`` collapses duplicates: while a task
-        with the same key is pending, the existing task's id is returned."""
+        with the same key is pending, the existing task's id is returned.
+        ``time_limit`` / ``soft_time_limit`` override the task's defaults for
+        this call."""
         if countdown is not None and eta is not None:
             raise ValueError("pass either countdown or eta, not both")
         if countdown is not None:
             eta = datetime.now() + timedelta(seconds=countdown)
+        tl = self.time_limit if time_limit is None else time_limit
+        stl = self.soft_time_limit if soft_time_limit is None else soft_time_limit
+        if tl is not None and stl is not None and stl >= tl:
+            raise ValueError("soft_time_limit must be less than time_limit")
         task_id = self.app.broker.enqueue(
             self.name,
             args,
@@ -68,6 +96,8 @@ class Task:
             max_retries=self.max_retries if max_retries is None else max_retries,
             eta=eta,
             dedupe_key=dedupe_key,
+            time_limit=tl,
+            soft_time_limit=stl,
         )
         self.app.events.emit("task_enqueued", {"task_id": task_id, "task_name": self.name})
         return AsyncResult(self.app.broker, task_id)
@@ -87,6 +117,8 @@ class Task:
                 "queue": self.queue,
                 "priority": self.priority,
                 "max_retries": self.max_retries,
+                "time_limit": self.time_limit,
+                "soft_time_limit": self.soft_time_limit,
             },
         )
 
@@ -126,10 +158,16 @@ class Ferry:
         priority: int = 0,
         retry_backoff_base: float = 5.0,
         retry_backoff_max: float = 600.0,
+        time_limit: float | None = None,
+        soft_time_limit: float | None = None,
+        on_success: Callable | None = None,
+        on_failure: Callable | None = None,
+        on_retry: Callable | None = None,
     ):
         """Register a function as a task::
 
-            @app.task(queue="emails", max_retries=5)
+            @app.task(queue="emails", max_retries=5, time_limit=60,
+                      soft_time_limit=30, on_success=notify)
             def send_email(to, subject): ...
         """
 
@@ -146,6 +184,11 @@ class Ferry:
                 priority=priority,
                 retry_backoff_base=retry_backoff_base,
                 retry_backoff_max=retry_backoff_max,
+                time_limit=time_limit,
+                soft_time_limit=soft_time_limit,
+                on_success=on_success,
+                on_failure=on_failure,
+                on_retry=on_retry,
             )
             self.registry[task_name] = task
             return task

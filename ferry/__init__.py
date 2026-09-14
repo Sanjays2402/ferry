@@ -13,9 +13,9 @@ from .canvas import (
 )
 from .cron import CronSchedule
 from .events import EventBus
-from .results import AsyncResult, ResultExpired, TaskFailed
+from .results import AsyncResult, ResultExpired, TaskFailed, TaskRevoked
 from .scheduler import Beat
-from .worker import Worker
+from .worker import SoftTimeLimitExceeded, TimeLimitExceeded, Worker
 
 __version__ = "0.1.0"
 
@@ -34,8 +34,11 @@ __all__ = [
     "ResultExpired",
     "SQLiteBroker",
     "Signature",
+    "SoftTimeLimitExceeded",
     "Task",
     "TaskFailed",
+    "TaskRevoked",
+    "TimeLimitExceeded",
     "Worker",
     "__version__",
     "open_broker",
