@@ -65,6 +65,11 @@ def cmd_stats(args) -> int:
     from .broker import open_broker
 
     stats = open_broker(args.broker).stats()
+    if args.json:
+        import json
+
+        print(json.dumps(stats, indent=2, default=str))
+        return 0
     t = stats["tasks"]
     print(f"queued={t['queued']} active={t['claimed'] + t['running']} "
           f"done={t['done']} dead={t['dead'] + t['failed']} workers={len(stats['workers'])}")
@@ -155,6 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("stats", help="print broker stats")
     s.add_argument("--broker", default="sqlite:///ferry.db")
+    s.add_argument("--json", action="store_true",
+                   help="emit machine-readable JSON instead of the human-readable summary")
     s.set_defaults(func=cmd_stats)
 
     pu = sub.add_parser("purge", help="delete queued tasks")

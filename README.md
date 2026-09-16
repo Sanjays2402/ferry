@@ -135,11 +135,15 @@ ferry retry-dead --queue emails # …or just one queue's
 ferry revoke <task-id>          # cancel a task that hasn't started yet
 ferry rate-limit emails 100/m   # cap a queue at 100 tasks/minute
 ferry rate-limit emails --clear # remove the cap
+ferry stats --json              # full broker snapshot as JSON (for scripts/monitors)
 ```
 
 Rate limits are enforced inside the broker's claim path (token bucket, atomic
 per claim), so they hold across any number of workers. Revoked tasks move to
-the terminal `revoked` state; `AsyncResult.get()` raises `TaskRevoked`.
+the terminal `revoked` state; `AsyncResult.get()` raises `TaskRevoked`. The
+`--json` flag on `ferry stats` returns the complete broker snapshot (task
+counts, per-queue breakdown, workers, paused queues, rate limits) in
+machine-readable form for shell pipelines and monitoring.
 
 ## Workflows: chain, group, chord
 
