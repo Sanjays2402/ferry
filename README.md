@@ -6,6 +6,26 @@
 
 **Ferry carries your background work across the river.** A lightweight distributed task queue for Python — SQLite-simple to start, production-serious when it counts: priorities, retries with backoff, delayed and cron-scheduled tasks, a dead-letter queue, and a live dashboard.
 
+[![Ferry dashboard with task queues and worker activity](docs/dashboard.png)](#dashboard)
+
+**[Run Ferry locally →](#quick-start)** · [Explore the dashboard](#dashboard)
+
+Watch queue activity, inspect a task, and retry failed work from the local dashboard.
+
+## Quick start
+
+Requires Python 3.10+. Install from source with dashboard support:
+
+```bash
+git clone https://github.com/Sanjays2402/ferry.git
+cd ferry
+python3 -m venv .venv
+source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+python -m pip install -e ".[dashboard]"
+```
+
+Define a task in `myapp.py` using the example below, then start the worker and dashboard in separate activated terminals. Open **http://localhost:8000**. The dashboard runs locally; no publicly hosted demo is required.
+
 ```python
 from ferry import Ferry
 
