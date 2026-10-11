@@ -16,6 +16,7 @@ import threading
 from datetime import datetime, timezone
 
 from .app import Ferry
+from .broker import resolve_expires
 
 log = logging.getLogger("ferry.beat")
 
@@ -69,6 +70,7 @@ class Beat:
                 priority=options.get("priority", task.priority),
                 max_retries=options.get("max_retries", task.max_retries),
                 scheduled_id=scheduled_id,
+                expires=resolve_expires(options.get("expires", task.expires)),
             )
             log.info("beat enqueued periodic %s (slot %s) as %s", task_name, slot, task_id[:8])
             enqueued += 1

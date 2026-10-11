@@ -23,7 +23,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from .broker import _decode_args, _decode_result
+from .broker import _decode_args, _decode_progress, _decode_result
 
 _PREFIX = "ferry:"
 
@@ -145,6 +145,7 @@ class RedisBroker:
         dedupe_key: str | None = None,
         time_limit: float | None = None,
         soft_time_limit: float | None = None,
+        expires: datetime | None = None,
     ) -> str:
         from .serialization import dumps
 
@@ -193,6 +194,8 @@ class RedisBroker:
                 "result_expired": 0,
                 "time_limit": "" if time_limit is None else time_limit,
                 "soft_time_limit": "" if soft_time_limit is None else soft_time_limit,
+                "expires_at": expires.astimezone(timezone.utc).isoformat() if expires else "",
+                "progress": "",
             },
         )
         if eta_ts and eta_ts > time.time():
@@ -237,6 +240,25 @@ class RedisBroker:
     def revoke(self, task_id: str) -> bool:
         """Cancel a task that hasn't started yet. Returns False if it already
         started, finished, or doesn't exist."""
+        return self._end_pending(task_id, "revoked")
+
+    def expire_task(self, task_id: str) -> bool:
+        """Move a task that outlived its ``expires`` deadline to the terminal
+        ``expired`` state. Returns False if it already started or finished."""
+        return self._end_pending(task_id, "expired", record_finished=False)
+
+    def set_progress(self, task_id: str, progress: dict) -> bool:
+        """Record a running task's progress. Returns False if it isn't running."""
+        from .serialization import dumps
+
+        key = self._k("task", task_id)
+        if self._r.hget(key, "status") != "running":
+            return False
+        self._r.hset(key, "progress", dumps(progress))
+        return True
+
+    def _end_pending(self, task_id: str, status: str, record_finished: bool = True) -> bool:
+        """Move a queued/claimed task to a terminal ``status`` without running it."""
         t = self.get_task(task_id)
         if not t or t["status"] not in ("queued", "claimed"):
             return False
@@ -254,8 +276,9 @@ class RedisBroker:
             mapping={"finished_at": _utcnow(), "worker_id": "", "claimed_at": ""},
         )
         pipe.execute()
-        self._set_status(task_id, "revoked")
-        self._r.zadd(self._k("finished"), {f"{task_id}:revoked": time.time()})
+        self._set_status(task_id, status)
+        if record_finished:
+            self._r.zadd(self._k("finished"), {f"{task_id}:{status}": time.time()})
         return True
 
     def _set_status(self, task_id: str, new: str) -> str:
@@ -308,6 +331,7 @@ class RedisBroker:
                 "eta": eta_ts,
                 "worker_id": "",
                 "claimed_at": "",
+                "progress": "",
             },
         )
         self._set_status(task_id, "queued")
@@ -507,7 +531,7 @@ class RedisBroker:
 
     def stats(self) -> dict:
         counts = {s: 0 for s in ("queued", "claimed", "running", "done",
-                                 "failed", "dead", "revoked")}
+                                 "failed", "dead", "revoked", "expired")}
         for s, n in self._r.hgetall(self._k("counts")).items():
             counts[s] = int(n)
         queues: dict[str, dict] = {}
@@ -557,7 +581,8 @@ class RedisBroker:
         pipe.hset(
             self._k("task", task_id),
             mapping={"status": "queued", "attempts": 0, "error": "",
-                     "eta": 0, "worker_id": "", "claimed_at": "", "finished_at": ""},
+                     "eta": 0, "worker_id": "", "claimed_at": "", "finished_at": "",
+                     "progress": ""},
         )
         seq = self._r.incr(self._k("seq"))
         pipe.zadd(self._k("q", t["queue"]), {f"{seq:020d}:{task_id}": -int(t["priority"])})
@@ -590,6 +615,10 @@ class RedisBroker:
     @staticmethod
     def decode_result(task: dict):
         return _decode_result(task)
+
+    @staticmethod
+    def decode_progress(task: dict) -> dict | None:
+        return _decode_progress(task)
 
 
 __all__ = ["RedisBroker"]

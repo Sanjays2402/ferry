@@ -114,3 +114,88 @@ def test_worker_end_to_end(broker):
         time.sleep(0.02)
     assert result.get(timeout=1) == 42
     assert broker.stats()["tasks"]["done"] == 1
+
+
+def test_expire_task_and_stats(broker):
+    tid = broker.enqueue("t", [], {})
+    assert broker.expire_task(tid) is True
+    t = broker.get_task(tid)
+    assert t["status"] == "expired" and t["finished_at"]
+    assert broker.claim(["default"], "w") is None  # removed from the ready set
+    stats = broker.stats()
+    assert stats["tasks"]["expired"] == 1 and stats["tasks"]["queued"] == 0
+    assert broker.expire_task(tid) is False  # already terminal
+
+
+def test_expire_claimed_but_not_running_task(broker):
+    tid = broker.enqueue("t", [], {})
+    broker.claim(["default"], "w")
+    assert broker.expire_task(tid) is True
+    assert broker.mark_running(tid) is False
+    assert broker.stats()["tasks"]["claimed"] == 0
+
+
+def test_cannot_expire_running_task(broker):
+    tid = broker.enqueue("t", [], {})
+    broker.claim(["default"], "w")
+    broker.mark_running(tid)
+    assert broker.expire_task(tid) is False
+
+
+def test_expires_at_roundtrip(broker):
+    when = datetime.now(timezone.utc) + timedelta(minutes=5)
+    with_deadline = broker.enqueue("t", [], {}, expires=when)
+    without = broker.enqueue("t", [], {})
+    from ferry.broker import is_expired
+
+    assert not is_expired(broker.get_task(with_deadline))
+    assert broker.get_task(without)["expires_at"] == ""
+    assert not is_expired(broker.get_task(without))
+
+
+def test_progress_only_while_running(broker):
+    tid = broker.enqueue("t", [], {})
+    assert broker.set_progress(tid, {"current": 1}) is False
+    assert broker.decode_progress(broker.get_task(tid)) is None
+    broker.claim(["default"], "w")
+    broker.mark_running(tid)
+    assert broker.set_progress(tid, {"current": 3, "total": 4}) is True
+    assert broker.decode_progress(broker.get_task(tid)) == {"current": 3, "total": 4}
+
+
+def test_progress_cleared_on_retry(broker):
+    tid = broker.enqueue("t", [], {})
+    broker.claim(["default"], "w")
+    broker.mark_running(tid)
+    broker.set_progress(tid, {"current": 1})
+    broker.ack_failed(tid, "boom", None)
+    assert broker.decode_progress(broker.get_task(tid)) == {"current": 1}
+    assert broker.retry_task(tid)
+    assert broker.decode_progress(broker.get_task(tid)) is None
+
+
+def test_worker_expiry_and_progress_end_to_end(broker):
+    import time
+
+    from ferry import Ferry, TaskExpired, update_progress
+    from ferry.worker import Worker
+
+    app = Ferry("redis-expiry", broker=broker)
+    calls = []
+
+    @app.task
+    def job(x):
+        calls.append(x)
+        update_progress(x, total=10, message="working")
+        return x
+
+    stale = job.apply_async(args=(1,), expires=0.05)
+    time.sleep(0.15)
+    fresh = job.apply_async(args=(5,), expires=60)
+    Worker(app, concurrency=2, poll_interval=0.01).run_once(timeout=5)
+    assert calls == [5]
+    assert stale.status == "expired"
+    with pytest.raises(TaskExpired):
+        stale.get(timeout=1)
+    assert fresh.get(timeout=1) == 5
+    assert fresh.progress["percent"] == 50.0

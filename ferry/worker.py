@@ -11,8 +11,10 @@ Design notes:
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import ctypes
+import inspect
 import logging
 import os
 import random
@@ -25,7 +27,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from .app import Ferry
+from .broker import is_expired
 from .canvas import fire_continuations
+from .context import task_context
 
 log = logging.getLogger("ferry.worker")
 
@@ -103,6 +107,33 @@ def _call_with_limits(func, args, kwargs, soft: float | None, hard: float | None
     if kind == "ok":
         return value
     raise value
+
+
+async def _run_async(func, args, kwargs, soft: float | None):
+    """Run an ``async def`` task. On the soft limit the task is *cancelled*:
+    it sees ``asyncio.CancelledError`` at its current ``await`` (catch it to
+    clean up and return normally); if it doesn't, the task fails with
+    :class:`SoftTimeLimitExceeded`."""
+    if soft is None:
+        return await func(*args, **kwargs)
+    task = asyncio.ensure_future(func(*args, **kwargs))
+    fired = False
+
+    def on_soft_limit():
+        nonlocal fired
+        fired = True
+        log.warning("soft time limit (%.1fs) exceeded; cancelling async task", soft)
+        task.cancel()
+
+    handle = asyncio.get_running_loop().call_later(soft, on_soft_limit)
+    try:
+        return await task
+    except asyncio.CancelledError:
+        if fired:
+            raise SoftTimeLimitExceeded(f"task exceeded soft time limit of {soft:g}s") from None
+        raise
+    finally:
+        handle.cancel()
 
 
 class Worker:
@@ -250,22 +281,45 @@ class Worker:
     def _execute(self, task: dict) -> None:
         task_id, name = task["id"], task["task_name"]
         broker, events = self.app.broker, self.app.events
-        # the task may have been revoked between claim and start
-        if not broker.mark_running(task_id):
-            log.info("task %s (%s) revoked before start; skipping", name, task_id[:8])
-            return
         entry = self.app.registry.get(name)
         try:
+            # a task that waited past its `expires` deadline never runs
+            if is_expired(task):
+                if broker.expire_task(task_id):
+                    events.emit("task_expired", {"task_id": task_id, "task_name": name})
+                    log.warning("task %s (%s) expired before it started; skipping",
+                                name, task_id[:8])
+                return
+            # the task may have been revoked between claim and start
+            if not broker.mark_running(task_id):
+                log.info("task %s (%s) revoked before start; skipping", name, task_id[:8])
+                return
             if entry is None:
                 raise RuntimeError(f"unknown task {name!r} (not registered on this worker)")
             args, kwargs = broker.decode_args(task)
             events.emit("task_started", {"task_id": task_id, "task_name": name})
             started = time.monotonic()
+
+            is_async = inspect.iscoroutinefunction(entry.func)
+            soft = task.get("soft_time_limit")
+
+            def run(*a, **kw):
+                # runs in whichever thread executes the task, so the progress
+                # context follows the task even when time limits spawn a thread
+                with task_context(broker, events, task_id, name):
+                    if is_async:
+                        # `async def` tasks get their own event loop in this thread
+                        return asyncio.run(_run_async(entry.func, a, kw, soft))
+                    return entry.func(*a, **kw)
+
             result = _call_with_limits(
-                entry.func,
+                run,
                 args,
                 kwargs,
-                soft=task.get("soft_time_limit"),
+                # async tasks enforce the soft limit themselves (by cancellation):
+                # an exception injected into a thread parked in the event loop
+                # would never reach the coroutine
+                soft=None if is_async else soft,
                 hard=task.get("time_limit"),
             )
             elapsed = time.monotonic() - started

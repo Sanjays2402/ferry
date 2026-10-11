@@ -11,9 +11,10 @@ from .canvas import (
     GroupResult,
     Signature,
 )
+from .context import current_task_id, update_progress
 from .cron import CronSchedule
 from .events import EventBus
-from .results import AsyncResult, ResultExpired, TaskFailed, TaskRevoked
+from .results import AsyncResult, ResultExpired, TaskExpired, TaskFailed, TaskRevoked
 from .scheduler import Beat
 from .worker import SoftTimeLimitExceeded, TimeLimitExceeded, Worker
 
@@ -36,10 +37,13 @@ __all__ = [
     "Signature",
     "SoftTimeLimitExceeded",
     "Task",
+    "TaskExpired",
     "TaskFailed",
     "TaskRevoked",
     "TimeLimitExceeded",
     "Worker",
     "__version__",
+    "current_task_id",
     "open_broker",
+    "update_progress",
 ]

@@ -6,7 +6,7 @@ import functools
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
-from .broker import SQLiteBroker, open_broker
+from .broker import SQLiteBroker, open_broker, resolve_expires
 from .canvas import Chain, Chord, Group, Signature
 from .cron import CronSchedule
 from .events import EventBus
@@ -32,6 +32,7 @@ class Task:
         on_success: Callable | None = None,
         on_failure: Callable | None = None,
         on_retry: Callable | None = None,
+        expires: float | None = None,
     ):
         if (
             time_limit is not None
@@ -49,6 +50,7 @@ class Task:
         self.retry_backoff_max = retry_backoff_max
         self.time_limit = time_limit
         self.soft_time_limit = soft_time_limit
+        self.expires = expires  # default: seconds a call may wait before it is skipped
         # lifecycle hooks (worker-side only, never serialized):
         #   on_success(task_id, result, elapsed)
         #   on_failure(task_id, exc, will_retry)
@@ -74,11 +76,14 @@ class Task:
         dedupe_key: str | None = None,
         time_limit: float | None = None,
         soft_time_limit: float | None = None,
+        expires: float | datetime | None = None,
     ) -> AsyncResult:
         """Enqueue a task. ``dedupe_key`` collapses duplicates: while a task
         with the same key is pending, the existing task's id is returned.
         ``time_limit`` / ``soft_time_limit`` override the task's defaults for
-        this call."""
+        this call. ``expires`` (seconds from now, or a datetime) is a deadline
+        for *starting*: a worker that claims the task afterwards skips it and
+        marks it ``expired`` (``AsyncResult.get()`` raises ``TaskExpired``)."""
         if countdown is not None and eta is not None:
             raise ValueError("pass either countdown or eta, not both")
         if countdown is not None:
@@ -98,6 +103,7 @@ class Task:
             dedupe_key=dedupe_key,
             time_limit=tl,
             soft_time_limit=stl,
+            expires=resolve_expires(self.expires if expires is None else expires),
         )
         self.app.events.emit("task_enqueued", {"task_id": task_id, "task_name": self.name})
         return AsyncResult(self.app.broker, task_id)
@@ -119,6 +125,7 @@ class Task:
                 "max_retries": self.max_retries,
                 "time_limit": self.time_limit,
                 "soft_time_limit": self.soft_time_limit,
+                "expires": self.expires,
             },
         )
 
@@ -163,11 +170,12 @@ class Ferry:
         on_success: Callable | None = None,
         on_failure: Callable | None = None,
         on_retry: Callable | None = None,
+        expires: float | None = None,
     ):
         """Register a function as a task::
 
             @app.task(queue="emails", max_retries=5, time_limit=60,
-                      soft_time_limit=30, on_success=notify)
+                      soft_time_limit=30, expires=300, on_success=notify)
             def send_email(to, subject): ...
         """
 
@@ -189,6 +197,7 @@ class Ferry:
                 on_success=on_success,
                 on_failure=on_failure,
                 on_retry=on_retry,
+                expires=expires,
             )
             self.registry[task_name] = task
             return task

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import logging
+import os
 import sys
 
 
@@ -56,8 +57,19 @@ def cmd_beat(args) -> int:
 def cmd_dashboard(args) -> int:
     from .dashboard import run_dashboard
 
-    print(f"ferry dashboard on http://{args.host}:{args.port}")
-    run_dashboard(args.broker, host=args.host, port=args.port)
+    # --token wins; the env var keeps the secret out of the process list
+    token = args.token if args.token is not None else os.environ.get("FERRY_DASHBOARD_TOKEN")
+    if token is not None and not token:
+        raise SystemExit("dashboard: the token must not be empty")
+    if token is None and args.host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"warning: dashboard on {args.host} has no authentication; "
+            "pass --token or set FERRY_DASHBOARD_TOKEN",
+            file=sys.stderr,
+        )
+    print(f"ferry dashboard on http://{args.host}:{args.port}"
+          + (" (token required)" if token else ""))
+    run_dashboard(args.broker, host=args.host, port=args.port, token=token)
     return 0
 
 
@@ -75,6 +87,67 @@ def cmd_stats(args) -> int:
           f"done={t['done']} dead={t['dead'] + t['failed']} workers={len(stats['workers'])}")
     for q in stats["queues"]:
         print(f"  queue {q['queue']!r}: queued={q['queued']} active={q['active']} dead={q['dead']}")
+    return 0
+
+
+def _progress_text(broker, task: dict) -> str:
+    p = broker.decode_progress(task)
+    if not p:
+        return "—"
+    text = f"{p['percent']}%" if p.get("percent") is not None else str(p["current"])
+    return text + (f" {p['message']}" if p.get("message") else "")
+
+
+def cmd_tasks(args) -> int:
+    from .broker import open_broker
+
+    broker = open_broker(args.broker)
+    rows = broker.list_tasks(status=args.status, queue=args.queue, limit=args.limit)
+    if args.json:
+        import json
+
+        keys = ("id", "task_name", "queue", "status", "attempts", "max_retries",
+                "created_at", "finished_at", "expires_at")
+        out = [{k: r.get(k) or None for k in keys} | {"progress": broker.decode_progress(r)}
+               for r in rows]
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    if not rows:
+        print("no tasks")
+        return 0
+    for r in rows:
+        print(f"{r['id'][:8]}  {r['status']:<8} {r['queue']:<12} {r['task_name']}  "
+              f"{r['attempts']}/{r['max_retries']}  {_progress_text(broker, r)}")
+    return 0
+
+
+def cmd_inspect(args) -> int:
+    from .broker import open_broker
+
+    broker = open_broker(args.broker)
+    task = broker.get_task(args.task_id)
+    if task is None:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    targs, tkwargs = broker.decode_args(task)
+    detail = {
+        **{k: (v if v not in ("", None) else None) for k, v in task.items()
+           if k not in ("args", "kwargs", "result", "progress", "chain")},
+        "args": targs,
+        "kwargs": tkwargs,
+        "result": broker.decode_result(task),
+        "progress": broker.decode_progress(task),
+    }
+    if args.json:
+        import json
+
+        print(json.dumps(detail, indent=2, default=str))
+        return 0
+    width = max(len(k) for k in detail)
+    for key, value in detail.items():
+        if value is None:
+            continue
+        print(f"{key:<{width}}  {value}")
     return 0
 
 
@@ -156,6 +229,9 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--broker", default="sqlite:///ferry.db")
     d.add_argument("--host", default="127.0.0.1")
     d.add_argument("--port", type=int, default=8000)
+    d.add_argument("--token", default=None,
+                   help="require this token (Bearer, or Basic-auth password); "
+                        "falls back to $FERRY_DASHBOARD_TOKEN")
     d.set_defaults(func=cmd_dashboard)
 
     s = sub.add_parser("stats", help="print broker stats")
@@ -163,6 +239,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true",
                    help="emit machine-readable JSON instead of the human-readable summary")
     s.set_defaults(func=cmd_stats)
+
+    ts = sub.add_parser("tasks", help="list recent tasks")
+    ts.add_argument("--broker", default="sqlite:///ferry.db")
+    ts.add_argument("--status", default=None, help="filter, e.g. running, dead, expired")
+    ts.add_argument("--queue", default=None)
+    ts.add_argument("--limit", type=int, default=20)
+    ts.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    ts.set_defaults(func=cmd_tasks)
+
+    ins = sub.add_parser("inspect", help="show one task: state, args, result, progress, error")
+    ins.add_argument("task_id")
+    ins.add_argument("--broker", default="sqlite:///ferry.db")
+    ins.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    ins.set_defaults(func=cmd_inspect)
 
     pu = sub.add_parser("purge", help="delete queued tasks")
     pu.add_argument("--broker", default="sqlite:///ferry.db")

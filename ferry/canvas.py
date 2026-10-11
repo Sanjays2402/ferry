@@ -21,6 +21,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from .broker import resolve_expires
 from .results import AsyncResult
 from .serialization import dumps, loads
 
@@ -136,6 +137,7 @@ def _enqueue_sig(
         chord_index=chord_index,
         time_limit=opts.get("time_limit"),
         soft_time_limit=opts.get("soft_time_limit"),
+        expires=resolve_expires(opts.get("expires")),
     )
 
 

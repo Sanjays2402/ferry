@@ -13,11 +13,11 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .serialization import dumps, loads
 
-_STATUSES = ("queued", "claimed", "running", "done", "failed", "dead", "revoked")
+_STATUSES = ("queued", "claimed", "running", "done", "failed", "dead", "revoked", "expired")
 
 _RATE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*/\s*([a-z]+)\s*$", re.IGNORECASE)
 _RATE_UNITS = {
@@ -44,6 +44,38 @@ def parse_rate(rate: str | float) -> tuple[float, str]:
     if n <= 0:
         raise ValueError("rate must be positive")
     return n / _RATE_UNITS[unit], f"{n:g}/{unit}"
+
+
+def resolve_expires(
+    expires: float | datetime | None, now: datetime | None = None
+) -> datetime | None:
+    """Turn an ``expires`` option into an absolute UTC deadline.
+
+    ``expires`` is either seconds from now or a datetime (naive datetimes are
+    local time, like ``eta``). ``None`` means the task never expires."""
+    if expires is None:
+        return None
+    if isinstance(expires, datetime):
+        return expires.astimezone(timezone.utc)
+    if isinstance(expires, bool) or not isinstance(expires, (int, float)):
+        raise TypeError("expires must be seconds (int/float) or a datetime")
+    if expires <= 0:
+        raise ValueError("expires must be positive")
+    return (now or datetime.now(timezone.utc)) + timedelta(seconds=expires)
+
+
+def is_expired(task: dict, now: datetime | None = None) -> bool:
+    """True if the task has an ``expires_at`` deadline that has passed."""
+    raw = task.get("expires_at")
+    if not raw:
+        return False
+    return datetime.fromisoformat(raw) <= (now or datetime.now(timezone.utc))
+
+
+def _decode_progress(task: dict) -> dict | None:
+    raw = task.get("progress")
+    return loads(raw) if raw else None
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ferry_tasks (
@@ -127,6 +159,8 @@ class SQLiteBroker:
             "result_expired INTEGER NOT NULL DEFAULT 0",
             "time_limit REAL",
             "soft_time_limit REAL",
+            "expires_at TEXT",
+            "progress TEXT",
         ):
             if coldef.split()[0] not in cols:
                 conn.execute(f"ALTER TABLE ferry_tasks ADD COLUMN {coldef}")
@@ -160,8 +194,11 @@ class SQLiteBroker:
         dedupe_key: str | None = None,
         time_limit: float | None = None,
         soft_time_limit: float | None = None,
+        expires: datetime | None = None,
     ) -> str:
-        """Enqueue a task. ``task_id`` lets callers pre-assign ids (used by
+        """Enqueue a task. ``expires`` is an absolute deadline: a worker that
+        claims the task after it skips it and marks it ``expired``.
+        ``task_id`` lets callers pre-assign ids (used by
         canvases); ``chain`` is a JSON list of serialized signatures to run
         after this task succeeds; ``chord_id``/``chord_index`` attach the task
         to a chord barrier. ``dedupe_key`` collapses duplicates: if a task with
@@ -195,8 +232,8 @@ class SQLiteBroker:
                (id, queue, task_name, args, kwargs, priority,
                 max_retries, eta, scheduled_id, created_at,
                 chain, chord_id, chord_index, dedupe_key,
-                time_limit, soft_time_limit)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                time_limit, soft_time_limit, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 queue,
@@ -214,6 +251,7 @@ class SQLiteBroker:
                 dedupe_key,
                 time_limit,
                 soft_time_limit,
+                expires.astimezone(timezone.utc).isoformat() if expires else None,
             ),
         )
         conn.commit()
@@ -283,6 +321,28 @@ class SQLiteBroker:
         self._connect().commit()
         return cur.rowcount > 0
 
+    def expire_task(self, task_id: str) -> bool:
+        """Move a task that outlived its ``expires`` deadline to the terminal
+        ``expired`` state. Returns False if it already started or finished."""
+        cur = self._connect().execute(
+            """UPDATE ferry_tasks SET status='expired', finished_at=?,
+                   worker_id=NULL, claimed_at=NULL
+               WHERE id=? AND status IN ('queued','claimed')""",
+            (_utcnow(), task_id),
+        )
+        self._connect().commit()
+        return cur.rowcount > 0
+
+    def set_progress(self, task_id: str, progress: dict) -> bool:
+        """Record a running task's progress (``current``/``total``/``message``).
+        Returns False if the task isn't running."""
+        cur = self._connect().execute(
+            "UPDATE ferry_tasks SET progress=? WHERE id=? AND status='running'",
+            (dumps(progress), task_id),
+        )
+        self._connect().commit()
+        return cur.rowcount > 0
+
     def ack_done(self, task_id: str, result) -> None:
         self._connect().execute(
             "UPDATE ferry_tasks SET status='done', result=?, finished_at=? WHERE id=?",
@@ -303,7 +363,7 @@ class SQLiteBroker:
         conn.execute(
             """UPDATE ferry_tasks
                SET status='queued', attempts=attempts+1, error=?,
-                   eta=?, worker_id=NULL, claimed_at=NULL
+                   eta=?, worker_id=NULL, claimed_at=NULL, progress=NULL
                WHERE id=?""",
             (error, retry_at.astimezone(timezone.utc).isoformat(), task_id),
         )
@@ -499,7 +559,7 @@ class SQLiteBroker:
         """Requeue every failed/dead task (optionally limited to one queue)."""
         q = """UPDATE ferry_tasks
                SET status='queued', attempts=0, error=NULL, eta=NULL,
-                   worker_id=NULL, claimed_at=NULL, finished_at=NULL
+                   worker_id=NULL, claimed_at=NULL, finished_at=NULL, progress=NULL
                WHERE status IN ('failed','dead')"""
         params: list = []
         if queue:
@@ -609,7 +669,7 @@ class SQLiteBroker:
         cur = self._connect().execute(
             """UPDATE ferry_tasks
                SET status='queued', attempts=0, error=NULL, eta=NULL,
-                   worker_id=NULL, claimed_at=NULL, finished_at=NULL
+                   worker_id=NULL, claimed_at=NULL, finished_at=NULL, progress=NULL
                WHERE id=? AND status IN ('failed','dead')""",
             (task_id,),
         )
@@ -634,6 +694,10 @@ class SQLiteBroker:
     @staticmethod
     def decode_result(task: dict):
         return _decode_result(task)
+
+    @staticmethod
+    def decode_progress(task: dict) -> dict | None:
+        return _decode_progress(task)
 
 
 def _decode_args(task: dict) -> tuple[list, dict]:
