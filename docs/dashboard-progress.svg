@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="400" viewBox="0 0 1100 400">
+  <defs>
+    <style>
+      .sans { font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
+      .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1100" height="400" rx="16" fill="#000000"/>
+  <rect x="24" y="24" width="1052" height="352" rx="12" fill="#0a0a0a" stroke="#262626"/>
+
+  <!-- panel header + filter -->
+  <text x="50" y="64" fill="#ededed" font-size="17" class="sans" font-weight="650">Tasks</text>
+  <rect x="780" y="44" width="132" height="30" rx="8" fill="#0f0f0f" stroke="#262626"/>
+  <text x="794" y="64" fill="#ededed" font-size="13" class="sans">all statuses  ▾</text>
+  <rect x="922" y="44" width="62" height="30" rx="8" fill="#161616" stroke="#262626"/>
+  <text x="953" y="64" text-anchor="middle" fill="#ededed" font-size="13" class="sans">Refresh</text>
+  <rect x="994" y="44" width="62" height="30" rx="8" fill="#161616" stroke="#262626"/>
+  <text x="1025" y="64" text-anchor="middle" fill="#ededed" font-size="12" class="sans">Retry dead</text>
+
+  <!-- column headers -->
+  <g fill="#7a7a7a" font-size="11" class="sans" letter-spacing="0.6">
+    <text x="50" y="108">TASK</text>
+    <text x="330" y="108">QUEUE</text>
+    <text x="440" y="108">STATUS</text>
+    <text x="680" y="108">ATTEMPTS</text>
+    <text x="780" y="108">WORKER</text>
+    <text x="930" y="108">FINISHED</text>
+  </g>
+  <line x1="40" y1="120" x2="1060" y2="120" stroke="#262626"/>
+
+  <!-- row 1: running with progress -->
+  <text x="50" y="148" fill="#ededed" font-size="12" class="mono">demo.import_rows</text>
+  <text x="50" y="166" fill="#7a7a7a" font-size="11" class="mono">964a71e4</text>
+  <text x="330" y="156" fill="#ededed" font-size="12" class="mono">imports</text>
+  <rect x="440" y="136" width="74" height="22" rx="11" fill="#1a1408" stroke="#5a4a26"/>
+  <text x="477" y="151" text-anchor="middle" fill="#ffb454" font-size="11" class="sans" font-weight="650">running</text>
+  <rect x="440" y="168" width="150" height="5" rx="2.5" fill="#1c1c1c"/>
+  <rect x="440" y="168" width="36" height="5" rx="2.5" fill="#ffb454"/>
+  <text x="602" y="174" fill="#7a7a7a" font-size="11" class="sans">24% · importing</text>
+  <text x="680" y="156" fill="#ededed" font-size="12" class="sans">0/3</text>
+  <text x="780" y="156" fill="#ededed" font-size="12" class="mono">worker-1</text>
+  <text x="930" y="156" fill="#7a7a7a" font-size="12" class="sans">—</text>
+  <line x1="40" y1="190" x2="1060" y2="190" stroke="#1c1c1c"/>
+
+  <!-- row 2: expired -->
+  <text x="50" y="218" fill="#ededed" font-size="12" class="mono">demo.send_code</text>
+  <text x="50" y="236" fill="#7a7a7a" font-size="11" class="mono">bc67652b</text>
+  <text x="330" y="226" fill="#ededed" font-size="12" class="mono">sms</text>
+  <rect x="440" y="206" width="72" height="22" rx="11" fill="#16120a" stroke="#4d4226"/>
+  <text x="476" y="221" text-anchor="middle" fill="#b89a5a" font-size="11" class="sans" font-weight="650">expired</text>
+  <text x="680" y="226" fill="#ededed" font-size="12" class="sans">0/3</text>
+  <text x="780" y="226" fill="#ededed" font-size="12" class="mono">—</text>
+  <text x="930" y="226" fill="#ededed" font-size="12" class="sans">47s ago</text>
+  <line x1="40" y1="250" x2="1060" y2="250" stroke="#1c1c1c"/>
+
+  <!-- row 3: queued -->
+  <text x="50" y="278" fill="#ededed" font-size="12" class="mono">demo.later</text>
+  <text x="50" y="296" fill="#7a7a7a" font-size="11" class="mono">789e31ac</text>
+  <text x="330" y="286" fill="#ededed" font-size="12" class="mono">default</text>
+  <rect x="440" y="266" width="66" height="22" rx="11" fill="#0a1626" stroke="#2c4a68"/>
+  <text x="473" y="281" text-anchor="middle" fill="#6aa7ff" font-size="11" class="sans" font-weight="650">queued</text>
+  <text x="680" y="286" fill="#ededed" font-size="12" class="sans">0/3</text>
+  <text x="780" y="286" fill="#ededed" font-size="12" class="mono">—</text>
+  <text x="930" y="286" fill="#7a7a7a" font-size="12" class="sans">—</text>
+  <rect x="990" y="268" width="56" height="24" rx="8" fill="#161616" stroke="#5f2c2b"/>
+  <text x="1018" y="284" text-anchor="middle" fill="#ff5f56" font-size="11" class="sans">revoke</text>
+  <line x1="40" y1="310" x2="1060" y2="310" stroke="#1c1c1c"/>
+
+  <!-- row 4: done -->
+  <text x="50" y="338" fill="#ededed" font-size="12" class="mono">demo.send_email</text>
+  <text x="50" y="356" fill="#7a7a7a" font-size="11" class="mono">6e444399</text>
+  <text x="330" y="346" fill="#ededed" font-size="12" class="mono">emails</text>
+  <rect x="440" y="326" width="56" height="22" rx="11" fill="#06140c" stroke="#27573c"/>
+  <text x="468" y="341" text-anchor="middle" fill="#3ddc84" font-size="11" class="sans" font-weight="650">done</text>
+  <text x="680" y="346" fill="#ededed" font-size="12" class="sans">0/3</text>
+  <text x="780" y="346" fill="#ededed" font-size="12" class="mono">worker-1</text>
+  <text x="930" y="346" fill="#ededed" font-size="12" class="sans">2m ago</text>
+</svg>

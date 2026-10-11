@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="440" viewBox="0 0 1400 440">
+  <defs>
+    <style>
+      .sans { font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
+      .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="440" rx="16" fill="#000000"/>
+
+  <!-- ============ metrics terminal ============ -->
+  <rect x="30" y="30" width="720" height="380" rx="12" fill="#000000" stroke="#262626"/>
+  <rect x="30" y="30" width="720" height="40" rx="12" fill="#0a0a0a"/>
+  <rect x="30" y="56" width="720" height="14" fill="#0a0a0a"/>
+  <circle cx="56" cy="50" r="6" fill="#ff5f56"/>
+  <circle cx="76" cy="50" r="6" fill="#ffb454"/>
+  <circle cx="96" cy="50" r="6" fill="#3ddc84"/>
+  <text x="390" y="55" text-anchor="middle" fill="#7a7a7a" font-size="12" class="sans">GET /metrics</text>
+  <line x1="30" y1="70" x2="750" y2="70" stroke="#262626"/>
+
+  <text x="52" y="102" fill="#3ddc84" font-size="13" class="mono">$ <tspan fill="#ededed">curl -H "Authorization: Bearer $TOKEN" :8000/metrics</tspan></text>
+  <g font-size="13" class="mono">
+    <text x="52" y="136" fill="#7a7a7a"># HELP ferry_tasks Number of tasks by status.</text>
+    <text x="52" y="158" fill="#7a7a7a"># TYPE ferry_tasks gauge</text>
+    <text x="52" y="180" fill="#ededed">ferry_tasks{<tspan fill="#6aa7ff">status="queued"</tspan>} <tspan fill="#ffb454">42</tspan></text>
+    <text x="52" y="202" fill="#ededed">ferry_tasks{<tspan fill="#6aa7ff">status="running"</tspan>} <tspan fill="#ffb454">8</tspan></text>
+    <text x="52" y="224" fill="#ededed">ferry_tasks{<tspan fill="#6aa7ff">status="expired"</tspan>} <tspan fill="#ffb454">3</tspan></text>
+    <text x="52" y="256" fill="#ededed">ferry_queue_tasks{<tspan fill="#6aa7ff">queue="emails",state="queued"</tspan>} <tspan fill="#ffb454">37</tspan></text>
+    <text x="52" y="278" fill="#ededed">ferry_queue_tasks{<tspan fill="#6aa7ff">queue="emails",state="dead"</tspan>} <tspan fill="#ffb454">1</tspan></text>
+    <text x="52" y="310" fill="#ededed">ferry_queue_paused{<tspan fill="#6aa7ff">queue="bulk"</tspan>} <tspan fill="#ffb454">1</tspan></text>
+    <text x="52" y="342" fill="#ededed">ferry_workers <tspan fill="#ffb454">4</tspan></text>
+    <text x="52" y="364" fill="#ededed">ferry_worker_concurrency <tspan fill="#ffb454">16</tspan></text>
+  </g>
+  <text x="52" y="394" fill="#7a7a7a" font-size="12" class="sans">Prometheus text format · no client library · works on both brokers</text>
+
+  <!-- ============ auth ============ -->
+  <rect x="780" y="30" width="590" height="380" rx="12" fill="#0a0a0a" stroke="#262626"/>
+  <text x="810" y="72" fill="#ffb454" font-size="17" class="mono" font-weight="600">--token</text>
+  <text x="810" y="96" fill="#7a7a7a" font-size="12" class="sans">ferry dashboard --host 0.0.0.0 --token …   (or $FERRY_DASHBOARD_TOKEN)</text>
+
+  <!-- request rows -->
+  <rect x="810" y="120" width="530" height="48" rx="8" fill="#0f0f0f" stroke="#262626"/>
+  <text x="826" y="149" fill="#ededed" font-size="13" class="mono">GET /api/stats</text>
+  <text x="1010" y="149" fill="#7a7a7a" font-size="12" class="sans">no credentials</text>
+  <rect x="1264" y="132" width="60" height="24" rx="12" fill="#1a0a09" stroke="#5f2c2b"/>
+  <text x="1294" y="149" text-anchor="middle" fill="#ff5f56" font-size="12" class="mono" font-weight="600">401</text>
+
+  <rect x="810" y="178" width="530" height="48" rx="8" fill="#0f0f0f" stroke="#262626"/>
+  <text x="826" y="207" fill="#ededed" font-size="13" class="mono">GET /metrics</text>
+  <text x="1010" y="207" fill="#7a7a7a" font-size="12" class="sans">Bearer &lt;token&gt;</text>
+  <rect x="1264" y="190" width="60" height="24" rx="12" fill="#06140c" stroke="#27573c"/>
+  <text x="1294" y="207" text-anchor="middle" fill="#3ddc84" font-size="12" class="mono" font-weight="600">200</text>
+
+  <rect x="810" y="236" width="530" height="48" rx="8" fill="#0f0f0f" stroke="#262626"/>
+  <text x="826" y="265" fill="#ededed" font-size="13" class="mono">GET /</text>
+  <text x="1010" y="265" fill="#7a7a7a" font-size="12" class="sans">Basic (any user, token as password)</text>
+  <rect x="1264" y="248" width="60" height="24" rx="12" fill="#06140c" stroke="#27573c"/>
+  <text x="1294" y="265" text-anchor="middle" fill="#3ddc84" font-size="12" class="mono" font-weight="600">200</text>
+
+  <text x="810" y="324" fill="#ededed" font-size="14" class="sans">One token guards everything.</text>
+  <text x="810" y="348" fill="#7a7a7a" font-size="13" class="sans">UI · <tspan class="mono" fill="#ffb454">/api/*</tspan> · <tspan class="mono" fill="#ffb454">/metrics</tspan> · live <tspan class="mono" fill="#ffb454">/ws</tspan> feed.</text>
+  <text x="810" y="370" fill="#7a7a7a" font-size="13" class="sans">Constant-time compare; never accepted from the query string.</text>
+  <text x="810" y="392" fill="#7a7a7a" font-size="13" class="sans">Put TLS in front when the dashboard leaves localhost.</text>
+</svg>

@@ -17,6 +17,20 @@ All notable changes to Ferry are documented here. The format follows [Keep a Cha
 - Lifecycle hooks: `on_success(task_id, result, elapsed)`, `on_failure(task_id, exc, will_retry)`, `on_retry(task_id, exc, attempt, retry_in)` on `@app.task`. Hook errors are logged, never fatal.
 - Per-queue rate limits: `broker.set_rate_limit(queue, "100/s" | "10/m" | "5/h")` / `get_rate_limit` / `clear_rate_limit`; `ferry rate-limit <queue> <rate> [--clear]`; dashboard rate-limit column with set/clear. Enforced atomically in the claim path on both brokers, so the cap holds across any number of workers.
 
+- Task expiry: `expires=` (seconds or datetime) on `@app.task`, `apply_async()` and signatures. A worker that claims a task after its deadline skips it; the task moves to the terminal `expired` state, `task_expired` is emitted, and `AsyncResult.get()` raises the new `TaskExpired`. Both brokers; `expired` appears in stats, the dashboard filter, and periodic tasks honor the task's default.
+- Task progress: `ferry.update_progress(current, total=None, message=None)` inside a running task; `AsyncResult.progress`, `task_progress` events, progress bars in the dashboard, `progress` in the task API. Stored on the task (both brokers) and cleared on retry.
+- Prometheus metrics: `GET /metrics` on the dashboard (`ferry_tasks`, `ferry_queue_tasks`, `ferry_queue_paused`, `ferry_workers`, …) and `ferry.metrics.render_metrics()`; no extra dependency.
+- Dashboard authentication: `ferry dashboard --token` / `FERRY_DASHBOARD_TOKEN` (and `create_app(token=…)`) require a Bearer token or Basic-auth password on every route including `/metrics` and the WebSocket; constant-time comparison; warns when binding a non-local address without a token.
+
+- Async tasks: `async def` tasks run natively in workers (own event loop per call); `AsyncResult.aget()` awaits a result without blocking the loop. For async tasks the soft time limit cancels the task (`asyncio.CancelledError`; uncaught → `SoftTimeLimitExceeded`).
+- CLI: `ferry tasks [--status] [--queue] [--limit] [--json]` and `ferry inspect <task-id> [--json]`.
+- Dashboard restyled in true black (OLED): flat sections with hairline dividers, monospace figures, status shown as a dot + label instead of filled pills.
+
+### Fixed
+- The `dashboard` extra did not install a WebSocket library, so uvicorn answered every `/ws` upgrade with 404 and the live feed could never connect; it now depends on `websockets`.
+- Dashboard WebSocket (`/ws`) rejected every connection (FastAPI could not resolve the `WebSocket` annotation because it was imported inside `create_app`), so the live feed silently fell back to polling.
+- A task revoked between claim and start never released its worker slot, so `Worker.run_once()` could wait out its full timeout instead of draining.
+
 ## [0.1.0] — 2026-09-14
 
 First public release.

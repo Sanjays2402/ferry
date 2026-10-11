@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="440" viewBox="0 0 1400 440">
+  <defs>
+    <marker id="e-gold" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ffb454"/>
+    </marker>
+    <marker id="e-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6aa7ff"/>
+    </marker>
+    <style>
+      .sans { font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
+      .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="440" rx="16" fill="#000000"/>
+
+  <!-- ============ expiry ============ -->
+  <rect x="30" y="30" width="660" height="380" rx="12" fill="#0a0a0a" stroke="#262626"/>
+  <text x="60" y="72" fill="#ffb454" font-size="17" class="mono" font-weight="600">expires</text>
+  <text x="60" y="96" fill="#7a7a7a" font-size="12" class="sans">send_code.apply_async(args=(phone,), expires=30)</text>
+
+  <!-- time axis -->
+  <line x1="60" y1="215" x2="650" y2="215" stroke="#262626" stroke-width="2" marker-end="url(#e-gold)"/>
+  <text x="640" y="238" text-anchor="end" fill="#7a7a7a" font-size="12" class="sans">time</text>
+
+  <!-- enqueued -->
+  <circle cx="90" cy="215" r="6" fill="#6aa7ff"/>
+  <text x="90" y="244" text-anchor="middle" fill="#6aa7ff" font-size="12" class="mono">enqueued</text>
+
+  <!-- deadline -->
+  <line x1="380" y1="118" x2="380" y2="330" stroke="#ffb454" stroke-width="2" stroke-dasharray="6 5"/>
+  <text x="380" y="112" text-anchor="middle" fill="#ffb454" font-size="12" class="mono">deadline (+30s)</text>
+
+  <!-- claimed in time -->
+  <circle cx="250" cy="215" r="6" fill="#3ddc84"/>
+  <line x1="250" y1="209" x2="250" y2="168" stroke="#3ddc84" stroke-width="2"/>
+  <rect x="150" y="122" width="200" height="46" rx="8" fill="#06140c" stroke="#27573c"/>
+  <text x="250" y="142" text-anchor="middle" fill="#3ddc84" font-size="13" class="mono" font-weight="600">claimed in time</text>
+  <text x="250" y="159" text-anchor="middle" fill="#7a7a7a" font-size="12" class="sans">runs normally → done</text>
+
+  <!-- claimed late -->
+  <circle cx="500" cy="215" r="6" fill="#ff5f56"/>
+  <line x1="500" y1="221" x2="500" y2="262" stroke="#ff5f56" stroke-width="2"/>
+  <rect x="400" y="262" width="230" height="46" rx="8" fill="#16120a" stroke="#4d4226"/>
+  <text x="515" y="282" text-anchor="middle" fill="#b89a5a" font-size="13" class="mono" font-weight="600">claimed late → expired</text>
+  <text x="515" y="299" text-anchor="middle" fill="#7a7a7a" font-size="12" class="sans">skipped, never executed</text>
+
+  <text x="60" y="352" fill="#ededed" font-size="14" class="sans">A deadline for <tspan font-weight="600">starting</tspan> a task.</text>
+  <text x="60" y="376" fill="#7a7a7a" font-size="13" class="sans">Checked when a worker claims it. <tspan class="mono" fill="#ffb454">get()</tspan> raises <tspan class="mono" fill="#ffb454">TaskExpired</tspan>.</text>
+  <text x="60" y="396" fill="#7a7a7a" font-size="13" class="sans">Running tasks are never interrupted — use <tspan class="mono" fill="#ffb454">time_limit</tspan> for that.</text>
+
+  <!-- ============ progress ============ -->
+  <rect x="710" y="30" width="660" height="380" rx="12" fill="#0a0a0a" stroke="#262626"/>
+  <text x="740" y="72" fill="#6aa7ff" font-size="17" class="mono" font-weight="600">progress</text>
+  <text x="740" y="96" fill="#7a7a7a" font-size="12" class="sans">update_progress(current, total=None, message=None)</text>
+
+  <!-- inside the task -->
+  <rect x="740" y="122" width="270" height="92" rx="8" fill="#0f0f0f" stroke="#6aa7ff"/>
+  <text x="755" y="146" fill="#7a7a7a" font-size="12" class="mono">for i, row in enumerate(rows, 1):</text>
+  <text x="755" y="166" fill="#ededed" font-size="12" class="mono">    save(row)</text>
+  <text x="755" y="186" fill="#ededed" font-size="12" class="mono">    update_progress(i, total=500,</text>
+  <text x="755" y="204" fill="#ededed" font-size="12" class="mono">                    message="importing")</text>
+
+  <line x1="1010" y1="168" x2="1062" y2="168" stroke="#6aa7ff" stroke-width="2" marker-end="url(#e-blue)"/>
+
+  <!-- stored on the task -->
+  <rect x="1070" y="122" width="270" height="92" rx="8" fill="#0f0f0f" stroke="#262626"/>
+  <text x="1085" y="146" fill="#7a7a7a" font-size="12" class="sans">stored on the task row</text>
+  <text x="1085" y="166" fill="#ededed" font-size="12" class="mono">current: 120   total: 500</text>
+  <text x="1085" y="186" fill="#ededed" font-size="12" class="mono">percent: 24.0</text>
+  <text x="1085" y="204" fill="#ededed" font-size="12" class="mono">message: "importing"</text>
+
+  <!-- progress bar -->
+  <rect x="740" y="248" width="600" height="14" rx="7" fill="#1c1c1c"/>
+  <rect x="740" y="248" width="144" height="14" rx="7" fill="#ffb454"/>
+  <text x="740" y="286" fill="#ffb454" font-size="13" class="mono">24% · importing</text>
+  <text x="1340" y="286" text-anchor="end" fill="#7a7a7a" font-size="12" class="mono">result.progress</text>
+
+  <text x="740" y="332" fill="#ededed" font-size="14" class="sans">Visible from any process.</text>
+  <text x="740" y="356" fill="#7a7a7a" font-size="13" class="sans">Read <tspan class="mono" fill="#6aa7ff">AsyncResult.progress</tspan>, watch the bar in the dashboard,</text>
+  <text x="740" y="376" fill="#7a7a7a" font-size="13" class="sans">or subscribe to <tspan class="mono" fill="#6aa7ff">task_progress</tspan> events. Cleared on retry.</text>
+</svg>

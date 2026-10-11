@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-**Ferry carries your background work across the river.** A lightweight distributed task queue for Python — SQLite-simple to start, production-serious when it counts: priorities, retries with backoff, delayed and cron-scheduled tasks, a dead-letter queue, and a live dashboard.
+**Ferry carries your background work across the river.** A lightweight distributed task queue for Python — SQLite-simple to start, production-serious when it counts: priorities, retries with backoff, delayed and cron-scheduled tasks, expiry deadlines, progress reporting, a dead-letter queue, a live dashboard, and Prometheus metrics.
 
 [![Ferry dashboard with task queues and worker activity](docs/dashboard.png)](#dashboard)
 
@@ -70,6 +70,12 @@ Most task queues make you choose: **simple** (a Redis list and hope) or **seriou
 | Queue control | Pause/resume queues — workers skip paused queues until resumed |
 | Deduplication | `dedupe_key` on `apply_async` collapses pending duplicates into one task |
 | Result TTL | `Ferry(result_ttl=…)` expires old result payloads; `get()` raises `ResultExpired` |
+| Task expiry | `expires=` (seconds or datetime) skips tasks that waited too long; `AsyncResult.get()` raises `TaskExpired` |
+| Progress | `update_progress(i, total=n)` inside a task; read `result.progress`, watch it in the dashboard |
+| Async tasks | `async def` tasks run natively on workers; `await result.aget()` in async code |
+| Inspection | `ferry tasks` and `ferry inspect <id>` show state, args, result, progress and errors |
+| Metrics | Prometheus `/metrics` endpoint on the dashboard — queue depth, workers, paused queues |
+| Dashboard auth | `ferry dashboard --token …` protects the UI, API, `/metrics` and the live feed |
 | Brokers | SQLite out of the box (WAL mode); Redis via `redis://` URLs |
 
 ## Architecture
@@ -91,11 +97,13 @@ ferry/
 ├── cron.py            cron expression parser
 ├── results.py         AsyncResult / TaskFailed / ResultExpired
 ├── events.py          in-process lifecycle event bus
-├── dashboard.py       FastAPI app + WebSocket live feed
+├── context.py         per-task context: update_progress()
+├── metrics.py         Prometheus text-format rendering
+├── dashboard.py       FastAPI app + WebSocket live feed, token auth, /metrics
 ├── static/            dashboard UI (no build step)
 ├── cli.py             `ferry worker|beat|dashboard|stats|purge|pause|resume|retry-dead`
 └── serialization.py   strict JSON codec for args/results
-tests/                 100 tests: broker, worker, retries, cron, beat, dashboard, canvas, control plane, redis
+tests/                 broker, worker, retries, cron, beat, dashboard, canvas, control plane, expiry, progress, metrics/auth, redis
 examples/              quickstart, fan-out/fan-in
 ```
 
@@ -108,6 +116,7 @@ examples/              quickstart, fan-out/fan-in
     max_retries=5,        # retries after the first attempt
     retry_backoff_base=5, # seconds; delay = base * 2**attempt, capped…
     retry_backoff_max=600,
+    expires=300,          # skip the task if no worker starts it within 5 minutes
     time_limit=60,        # hard limit: task is failed after 60s (thread abandoned)
     soft_time_limit=30,   # soft limit: SoftTimeLimitExceeded raised in the task thread
     on_success=notify,    # on_success(task_id, result, elapsed)
@@ -124,7 +133,70 @@ Enqueue with overrides per call:
 send_email.apply_async(args=("a@b.c",), kwargs={"subject": "hi"},
                        queue="bulk", priority=1, countdown=3600,
                        dedupe_key="welcome:a@b.c",  # collapse duplicates
-                       time_limit=120)               # override limits per call
+                       time_limit=120,               # override limits per call
+                       expires=60)                   # or a datetime deadline
+```
+
+## Expiry and progress
+
+![Ferry expiry deadline and progress reporting](docs/expiry-progress.svg)
+
+**Expiry.** `expires` is a deadline for *starting* a task. A worker that claims a task after its deadline skips it, marks it `expired`, and emits `task_expired`; `AsyncResult.get()` raises `TaskExpired`. Use it for work that is worthless when late — a "your code is 123456" SMS, a cache warm-up, a periodic task that piled up while workers were down.
+
+```python
+@app.task(expires=300)                       # default for every call
+def send_code(phone): ...
+
+send_code.apply_async(args=("+15550100",), expires=30)      # seconds from now
+send_code.apply_async(args=("+15550100",), expires=datetime(2030, 1, 1, 9, 0))
+app.chain(a.s().set(expires=60), b.s())     # per-link, like any option
+```
+
+The deadline is absolute, so a retry that lands after it expires too. It is checked when a worker claims the task — a queued task with no workers stays `queued` until one shows up. Running tasks are never interrupted; use `time_limit` for that. A chain stops at an expired link, and a chord whose header task expires stalls (same as a dead one).
+
+**Progress.** Call `update_progress` from inside a task; read it from anywhere:
+
+```python
+from ferry import update_progress
+
+@app.task
+def import_rows(path):
+    rows = load(path)
+    for i, row in enumerate(rows, 1):
+        save(row)
+        update_progress(i, total=len(rows), message="importing")
+
+result = import_rows.delay("rows.csv")
+result.progress   # {'current': 120, 'total': 500, 'percent': 24.0, 'message': 'importing', ...}
+```
+
+Progress is stored on the task row (both brokers), so it is visible across processes, shown as a progress bar in the dashboard, and emitted as `task_progress` events. It is kept after a failure for post-mortems and cleared when the task is retried. `update_progress` raises `RuntimeError` outside a running task.
+
+## Async tasks
+
+Define tasks with `async def` and workers run them natively — each call gets its own event loop in its worker thread, so `await`-heavy work (HTTP, databases) overlaps freely up to `--concurrency`:
+
+```python
+@app.task(soft_time_limit=20, time_limit=30)
+async def fetch_profile(user_id):
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"https://api.example.com/users/{user_id}")
+        update_progress(1, total=1, message="fetched")
+        return r.json()
+
+# from async code (FastAPI, aiohttp, …) await the result without blocking the loop
+profile = await fetch_profile.delay(42).aget(timeout=30)
+```
+
+Retries, expiry, progress and hooks work as they do for sync tasks. Time limits differ in one way: the **soft limit cancels the task** — it sees `asyncio.CancelledError` at its current `await` (catch it to clean up and return normally; otherwise the task fails with `SoftTimeLimitExceeded`). The hard limit abandons the task as usual.
+
+## Inspecting tasks
+
+```bash
+ferry tasks --status dead --limit 10     # id, status, queue, name, attempts, progress
+ferry tasks --queue emails --json        # machine-readable
+ferry inspect 6e444399…                  # one task: state, expires_at, args, result, progress, error
+ferry inspect 6e444399… --json
 ```
 
 ## Control plane: pause, dedupe, result TTL
@@ -156,6 +228,7 @@ ferry revoke <task-id>          # cancel a task that hasn't started yet
 ferry rate-limit emails 100/m   # cap a queue at 100 tasks/minute
 ferry rate-limit emails --clear # remove the cap
 ferry stats --json              # full broker snapshot as JSON (for scripts/monitors)
+ferry tasks --status dead       # list recent tasks; ferry inspect <task-id> shows one
 ```
 
 Rate limits are enforced inside the broker's claim path (token bucket, atomic
@@ -207,9 +280,35 @@ Semantics worth knowing:
 
 `pip install "ferry[dashboard]"`, then `ferry dashboard`. You get queue depth, a per-minute throughput chart, a filterable task table with one-click retry of dead tasks, queue purge, and a live worker roster — all pushed over a WebSocket, no page reloads.
 
-Click any task to open its inspector: full arguments, result or traceback, and a status timeline. Queues can be paused and resumed from the dashboard, dead tasks retried individually, in bulk, or all at once.
+Click any task to open its inspector: full arguments, result or traceback, a status timeline, its `expires` deadline, and progress. Queues can be paused and resumed from the dashboard, dead tasks retried individually, in bulk, or all at once.
 
 ![Ferry dashboard](docs/dashboard.png)
+
+Running tasks that call `update_progress` show a live progress bar right in the task table, and tasks that outlived their `expires` deadline get their own `expired` status (and filter):
+
+![Task table with a running task's progress bar and an expired task](docs/dashboard-progress.svg)
+
+### Metrics and authentication
+
+![Prometheus /metrics output and token authentication](docs/metrics-auth.svg)
+
+The dashboard serves Prometheus metrics at `/metrics` — task counts by status, per-queue depth, paused queues, and worker totals:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: ferry
+    static_configs: [{ targets: ["localhost:8000"] }]
+```
+
+By default the dashboard is open, which is fine on `127.0.0.1`. To expose it, set a token — it protects the UI, every API route, `/metrics` and the live WebSocket feed:
+
+```bash
+export FERRY_DASHBOARD_TOKEN="$(openssl rand -hex 24)"   # or: ferry dashboard --token …
+ferry dashboard --host 0.0.0.0
+```
+
+Browsers prompt for a password (the username is ignored; the password is the token). Scripts and Prometheus send `Authorization: Bearer <token>` (`authorization: { credentials: … }` in the scrape config). Prefer the environment variable over `--token` so the secret stays out of the process list, and put TLS in front (a reverse proxy) whenever the dashboard leaves localhost — Basic and Bearer credentials are sent in the clear over plain HTTP. `ferry dashboard` warns if you bind a non-local address without a token.
 
 ## Performance
 
@@ -226,6 +325,11 @@ Measured on a 2-vCPU Linux VM, Python 3.12. Queue overhead per task is well unde
 | | Ferry | Celery | RQ | Dramatiq |
 |---|---|---|---|---|
 | Broker to get started | SQLite file (zero setup) | Redis/RabbitMQ | Redis | Redis/RabbitMQ |
+| Priorities | ✅ | ✅ (kombu) | ❌ | ❌ |
+| Cron scheduling | ✅ built in | ✅ (beat) | ❌ (needs rq-scheduler) | ✅ |
+| Dead-letter queue | ✅ | ✅ | ❌ | ✅ |
+| Live dashboard | ✅ built in | ❌ (flower, separate) | ✅ (rq-dashboard) | ❌ |
+| Dependencies (core) | **zero** | many | redis | pika/redis |
 
 ### Scaling past one box
 
@@ -236,11 +340,6 @@ app = Ferry("myapp", broker="redis://localhost:6379/0")
 ```
 
 Claims run as one atomic Lua script (move due delayed tasks, pop the highest-priority task), so workers stay exactly-once across machines with no extra coordination. Needs `pip install "ferry[redis]"`.
-| Priorities | ✅ | ✅ (kombu) | ❌ | ❌ |
-| Cron scheduling | ✅ built in | ✅ (beat) | ❌ (needs rq-scheduler) | ✅ |
-| Dead-letter queue | ✅ | ✅ | ❌ | ✅ |
-| Live dashboard | ✅ built in | ❌ (flower, separate) | ✅ (rq-dashboard) | ❌ |
-| Dependencies (core) | **zero** | many | redis | pika/redis |
 
 ## Development
 
