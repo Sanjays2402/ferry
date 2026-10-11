@@ -46,6 +46,7 @@ ferry = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # lets tests do `from tests.conftest import …` under plain `pytest`
 addopts = "-q"
 
 [tool.ruff]
