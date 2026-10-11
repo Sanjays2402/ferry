@@ -62,7 +62,7 @@ Most task queues make you choose: **simple** (a Redis list and hope) or **seriou
 |---|---|
 | Queues | Named queues, per-task priority (higher runs first, FIFO within a level) |
 | Retries | `max_retries`, exponential backoff + jitter, `retry_backoff_base`/`max` per task |
-| Scheduling | `countdown`, `eta`, `@app.periodic("*/5 * * * *")` cron |
+| Scheduling | `countdown`, `eta`, `@app.periodic("*/5 * * * *")` cron (standard 5-field syntax, evaluated in UTC; Sunday is `0` or `7`) |
 | Reliability | Dead-letter queue, stale-claim recovery, graceful worker shutdown |
 | Observability | Events API (`task_enqueued/succeeded/failed/dead`), live dashboard |
 | Payloads | JSON with datetime/date/UUID/bytes/set support; strict errors on the rest |

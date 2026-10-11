@@ -459,6 +459,14 @@ class RedisBroker:
 
     # -- workers -----------------------------------------------------------------
     def heartbeat(self, worker_id: str, queues: list[str], concurrency: int, hostname: str) -> None:
+        # a heartbeat refreshes last_beat but must not restart the worker's clock
+        started_at = _utcnow()
+        previous = self._r.hget(self._k("workers"), worker_id)
+        if previous:
+            try:
+                started_at = json.loads(previous)["started_at"]
+            except (KeyError, ValueError):
+                pass
         self._r.hset(
             self._k("workers"),
             worker_id,
@@ -470,7 +478,7 @@ class RedisBroker:
                     "hostname": hostname,
                     "ts": time.time(),
                     "last_beat": _utcnow(),
-                    "started_at": _utcnow(),
+                    "started_at": started_at,
                 }
             ),
         )
@@ -497,8 +505,11 @@ class RedisBroker:
     # -- inspection ----------------------------------------------------------------
     def get_task(self, task_id: str) -> dict | None:
         t = self._r.hgetall(self._k("task", task_id))
-        if not t:
-            return None
+        return self._normalize(t) if t else None
+
+    @staticmethod
+    def _normalize(t: dict) -> dict:
+        """Convert a raw task hash into the typed dict the rest of Ferry expects."""
         t["priority"] = int(t["priority"])
         t["attempts"] = int(t["attempts"])
         t["max_retries"] = int(t["max_retries"])
@@ -518,15 +529,18 @@ class RedisBroker:
         self, status: str | None = None, queue: str | None = None, limit: int = 100
     ) -> list[dict]:
         out = []
+        # SCAN order is arbitrary, so the newest ``limit`` tasks can only be
+        # chosen after looking at every match (stopping early returned a random
+        # subset rather than the most recent tasks)
         for key in self._r.scan_iter(match=self._k("task", "*")):
             t = self._r.hgetall(key)
+            if not t:  # deleted between SCAN and HGETALL
+                continue
             if status and t.get("status") != status:
                 continue
             if queue and t.get("queue") != queue:
                 continue
-            out.append(self.get_task(t["id"]))
-            if len(out) >= limit:
-                break
+            out.append(self._normalize(t))
         return sorted(out, key=lambda t: t["created_at"], reverse=True)[:limit]
 
     def stats(self) -> dict:
@@ -535,12 +549,15 @@ class RedisBroker:
         for s, n in self._r.hgetall(self._k("counts")).items():
             counts[s] = int(n)
         queues: dict[str, dict] = {}
+        # queue names may themselves contain ":", so strip the key prefix rather
+        # than splitting on the last colon
+        ready_prefix, delayed_prefix = self._k("q", ""), self._k("delayed", "")
         for key in self._r.scan_iter(match=self._k("q", "*")):
-            qname = key.split(":")[-1]
+            qname = key[len(ready_prefix):]
             q = queues.setdefault(qname, {"queue": qname, "queued": 0, "active": 0, "dead": 0})
             q["queued"] += self._r.zcard(key)
         for key in self._r.scan_iter(match=self._k("delayed", "*")):
-            qname = key.split(":")[-1]
+            qname = key[len(delayed_prefix):]
             q = queues.setdefault(qname, {"queue": qname, "queued": 0, "active": 0, "dead": 0})
             q["queued"] += self._r.zcard(key)
         # active/dead per queue need a scan; cheap enough for a dashboard

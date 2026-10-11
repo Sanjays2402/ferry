@@ -34,6 +34,13 @@ from .context import task_context
 log = logging.getLogger("ferry.worker")
 
 
+class ResultNotSerializable(Exception):
+    """A task returned a value that cannot be stored (see ``ferry.serialization``).
+
+    Deterministic, so the task is failed without retries: re-running it would
+    only repeat its side effects and hit the same error."""
+
+
 class SoftTimeLimitExceeded(Exception):
     """Raised inside a task's thread when its ``soft_time_limit`` elapses.
 
@@ -160,6 +167,7 @@ class Worker:
         self._inflight_lock = threading.Lock()
         self._paused_at = 0.0
         self._paused: set[str] = set()
+        self.abandoned = 0  # tasks still running when shutdown_timeout expired
 
     def _active_queues(self) -> list[str]:
         """Queues this worker may claim from right now (paused ones excluded).
@@ -257,6 +265,11 @@ class Worker:
         assert self._pool is not None
         while not self._stop.is_set():
             task = None
+            if self._inflight >= self.concurrency:
+                # every thread is busy: claiming more would only park tasks that
+                # other workers (or higher priorities) could run sooner
+                self._stop.wait(self.poll_interval)
+                continue
             try:
                 queues = self._active_queues()
                 if not queues:
@@ -275,8 +288,24 @@ class Worker:
             self._pool.submit(self._execute, task)
 
     def _shutdown_pool(self) -> None:
-        if self._pool is not None:
-            self._pool.shutdown(wait=True, cancel_futures=False)
+        """Let in-flight tasks finish, but wait at most ``shutdown_timeout``.
+
+        Tasks still running after that are abandoned (``self.abandoned``): their
+        threads keep going, the worker deregisters, and the beat requeues the
+        claims once no live worker owns them."""
+        if self._pool is None:
+            return
+        deadline = time.monotonic() + self.shutdown_timeout
+        while self._inflight > 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        with self._inflight_lock:
+            self.abandoned = self._inflight
+        if self.abandoned:
+            log.warning("worker %s: %d task(s) still running after %.1fs; abandoning them",
+                        self.worker_id, self.abandoned, self.shutdown_timeout)
+            self._pool.shutdown(wait=False, cancel_futures=True)
+        else:
+            self._pool.shutdown(wait=True)
 
     def _execute(self, task: dict) -> None:
         task_id, name = task["id"], task["task_name"]
@@ -323,7 +352,12 @@ class Worker:
                 hard=task.get("time_limit"),
             )
             elapsed = time.monotonic() - started
-            broker.ack_done(task_id, result)
+            try:
+                broker.ack_done(task_id, result)
+            except (TypeError, ValueError) as exc:  # raised by the JSON encoder
+                raise ResultNotSerializable(
+                    f"task returned a result that cannot be serialized: {exc}"
+                ) from exc
             events.emit("task_succeeded",
                         {"task_id": task_id, "task_name": name, "elapsed": elapsed})
             self._call_hook(entry, "on_success", task_id, result, elapsed)
@@ -334,7 +368,7 @@ class Worker:
             error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=5)}"
             attempts = task["attempts"]
             max_retries = task["max_retries"]
-            will_retry = attempts < max_retries
+            will_retry = attempts < max_retries and not isinstance(exc, ResultNotSerializable)
             self._call_hook(entry, "on_failure", task_id, exc, will_retry)
             if will_retry:
                 delay = self._backoff(task, attempts, entry)
@@ -372,5 +406,6 @@ class Worker:
             entry = self.app.registry.get(task["task_name"])
         base = entry.retry_backoff_base if entry else 5.0
         cap = entry.retry_backoff_max if entry else 600.0
-        delay = min(base * (2 ** attempts), cap)
+        # clamp the exponent: 2 ** attempts overflows a float for huge retry counts
+        delay = min(base * (2 ** min(attempts, 62)), cap)
         return delay / 2 + random.uniform(0, delay / 2)

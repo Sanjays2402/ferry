@@ -205,7 +205,10 @@ def create_app(broker_url: str = "sqlite:///ferry.db", token: str | None = None)
     def rate_limit(queue: str, payload: dict):
         rate = payload.get("rate")
         if rate:
-            broker.set_rate_limit(queue, rate)
+            try:
+                broker.set_rate_limit(queue, rate)
+            except (ValueError, TypeError) as exc:
+                return JSONResponse({"detail": str(exc)}, status_code=400)
             return JSONResponse({"rate": broker.get_rate_limit(queue), "queue": queue})
         broker.clear_rate_limit(queue)
         return JSONResponse({"rate": None, "queue": queue})

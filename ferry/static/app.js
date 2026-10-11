@@ -77,12 +77,14 @@
       b.addEventListener("click", async () => {
         await fetch("/api/queues/" + encodeURIComponent(b.dataset.pause) + "/pause", { method: "POST" });
         toast(`queue "${b.dataset.pause}" paused — workers will skip it`);
+        refreshTables();
       })
     );
     tb.querySelectorAll("[data-resume]").forEach((b) =>
       b.addEventListener("click", async () => {
         await fetch("/api/queues/" + encodeURIComponent(b.dataset.resume) + "/resume", { method: "POST" });
         toast(`queue "${b.dataset.resume}" resumed`);
+        refreshTables();
       })
     );
     tb.querySelectorAll("[data-rate]").forEach((b) =>
@@ -93,7 +95,9 @@
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ rate: rate.trim() || null }),
         })).json();
+        if (r.detail) { toast(r.detail, "warn"); return; }  // e.g. "bad rate 'fast'"
         toast(r.rate ? `queue "${b.dataset.rate}" limited to ${r.rate}` : `rate limit cleared on "${b.dataset.rate}"`, r.rate ? "" : "warn");
+        refreshTables();
       })
     );
     tb.querySelectorAll("[data-rate-clear]").forEach((b) =>
@@ -103,6 +107,7 @@
           body: JSON.stringify({ rate: null }),
         });
         toast(`rate limit cleared on "${b.dataset.rateClear}"`);
+        refreshTables();
       })
     );
   }

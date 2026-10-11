@@ -36,12 +36,18 @@ def cmd_worker(args) -> int:
         from .broker import open_broker
 
         app.broker = open_broker(args.broker)
-    Worker(
+    worker = Worker(
         app,
         queues=args.queues,
         concurrency=args.concurrency,
         worker_id=args.worker_id,
-    ).run()
+    )
+    worker.run()
+    if worker.abandoned:
+        # tasks that outlived shutdown_timeout are still running in non-daemon
+        # pool threads, which would keep the interpreter alive: exit for real
+        logging.shutdown()
+        os._exit(1)
     return 0
 
 
@@ -202,7 +208,10 @@ def cmd_rate_limit(args) -> int:
         broker.clear_rate_limit(args.queue)
         print(f"cleared rate limit on queue {args.queue!r}")
     else:
-        broker.set_rate_limit(args.queue, args.rate)
+        try:
+            broker.set_rate_limit(args.queue, args.rate)
+        except ValueError as exc:
+            raise SystemExit(f"rate-limit: {exc}") from None
         print(f"rate limit on queue {args.queue!r}: {broker.get_rate_limit(args.queue)}")
     return 0
 

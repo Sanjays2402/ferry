@@ -27,6 +27,16 @@ All notable changes to Ferry are documented here. The format follows [Keep a Cha
 - Dashboard restyled in true black (OLED): flat sections with hairline dividers, monospace figures, status shown as a dot + label instead of filled pills.
 
 ### Fixed
+- Cron: `7` is now accepted for Sunday; empty list items (`5,`) used to become a wildcard and run every minute; negative steps and reversed ranges (`30-10`) silently produced a schedule that never fires and are now rejected; `a/n` starts at `a` (`5/20` = 5,25,45); when both day-of-month and day-of-week are restricted either may match, as in standard cron (previously both had to).
+- Worker: a task returning a value that can't be serialized was re-executed on every retry (repeating its side effects); it now fails once, without retries.
+- Worker: `shutdown_timeout` was never applied, so a hung task made SIGTERM wait forever. Shutdown now waits at most `shutdown_timeout`, abandons stragglers (`Worker.abandoned`) and the CLI worker exits.
+- Worker: the poll loop claimed tasks regardless of `concurrency`, parking a backlog on one busy worker and starving the others (and higher priorities); it now claims only when a thread is free.
+- Worker: retry backoff raised `OverflowError` for very large attempt counts (e.g. `max_retries=10**6`), leaving the task stuck in `running`.
+- Canvas: using the same signature object twice in a chain gave two links the same task id (`UNIQUE constraint failed`); chains and groups now work on copies of the signatures.
+- SQLite broker: `sqlite:///:memory:` was unusable with workers (each thread saw its own empty database); it is now backed by a private temp file that is removed at exit.
+- Redis broker: queue names containing `:` were mangled in `stats()`; `list_tasks(limit=N)` returned an arbitrary N tasks instead of the newest; worker `started_at` was reset on every heartbeat.
+- Dashboard / CLI: an invalid rate limit returned HTTP 500 (now 400 with the reason, shown in a toast) and crashed `ferry rate-limit` with a traceback (now a one-line error). Pause, resume and rate-limit actions refresh the tables immediately.
+- Repo: `ferry.db` and `ferry.egg-info/` were committed despite being in `.gitignore`; they are no longer tracked.
 - The `dashboard` extra did not install a WebSocket library, so uvicorn answered every `/ws` upgrade with 404 and the live feed could never connect; it now depends on `websockets`.
 - Dashboard WebSocket (`/ws`) rejected every connection (FastAPI could not resolve the `WebSocket` annotation because it was imported inside `create_app`), so the live feed silently fell back to polling.
 - A task revoked between claim and start never released its worker slot, so `Worker.run_once()` could wait out its full timeout instead of draining.

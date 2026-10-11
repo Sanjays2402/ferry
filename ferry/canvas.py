@@ -160,9 +160,12 @@ class Chain:
     def apply_async(self) -> ChainResult:
         broker = self.app.broker
         ids = _new_ids(len(self.sigs))
-        for sig, tid in zip(self.sigs, ids):
+        # work on clones: assigning ids to the caller's objects would give two
+        # links the same id when one signature object appears twice in a chain
+        sigs = [s.clone() for s in self.sigs]
+        for sig, tid in zip(sigs, ids):
             sig.task_id = tid
-        first, rest = self.sigs[0], self.sigs[1:]
+        first, rest = sigs[0], sigs[1:]
         chain_json = dumps([s.to_dict() for s in rest]) if rest else None
         _enqueue_sig(broker, first.to_dict(), first.args, chain=chain_json)
         self.app.events.emit(
@@ -214,7 +217,7 @@ class Group:
     def apply_async(self) -> GroupResult:
         broker = self.app.broker
         ids = _new_ids(len(self.sigs))
-        for sig, tid in zip(self.sigs, ids):
+        for sig, tid in zip((s.clone() for s in self.sigs), ids):
             sig.task_id = tid
             _enqueue_sig(broker, sig.to_dict(), sig.args)
             self.app.events.emit(

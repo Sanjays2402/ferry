@@ -8,8 +8,12 @@ interface (see ``ferry/redis_broker.py`` when the ``redis`` extra is installed).
 
 from __future__ import annotations
 
+import atexit
+import os
 import re
+import shutil
 import sqlite3
+import tempfile
 import threading
 import time
 import uuid
@@ -129,6 +133,15 @@ class SQLiteBroker:
     """Durable broker backed by a SQLite database file (or ``:memory:``)."""
 
     def __init__(self, path: str = "ferry.db", timeout: float = 30.0):
+        self._temp_dir: str | None = None
+        if path == ":memory:":
+            # Connections are per-thread, and every ":memory:" connection is its
+            # own empty database, so worker threads would never see enqueued
+            # tasks. Back the "in-memory" broker with a private temp file that
+            # all threads share and that is deleted when the process exits.
+            self._temp_dir = tempfile.mkdtemp(prefix="ferry-mem-")
+            path = os.path.join(self._temp_dir, "ferry.db")
+            atexit.register(self._remove_temp_dir)
         self.path = path
         self._local = threading.local()
         self._timeout = timeout
@@ -174,6 +187,11 @@ class SQLiteBroker:
         if conn is not None:
             conn.close()
             self._local.conn = None
+
+    def _remove_temp_dir(self) -> None:
+        if self._temp_dir:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+            self._temp_dir = None
 
     # -- producing ------------------------------------------------------------
     def enqueue(
