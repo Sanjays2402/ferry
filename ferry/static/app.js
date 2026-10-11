@@ -147,7 +147,7 @@
         `<td><input type="checkbox" class="sel" ${selected.has(t.id) ? "checked" : ""}></td>` +
         `<td class="mono" title="${esc(t.id)}">${esc(t.task_name)}<br><span class="muted">${esc(t.id.slice(0, 8))}</span></td>` +
         `<td class="mono">${esc(t.queue)}</td>` +
-        `<td><span class="status ${t.status}">${t.status}</span></td>` +
+        `<td><span class="status ${t.status}">${t.status}</span>${t.status === "running" ? progressBar(t.progress) : ""}</td>` +
         `<td>${t.attempts}/${t.max_retries}</td>` +
         `<td class="mono">${esc((t.worker_id || "—").slice(0, 18))}</td>` +
         `<td>${t.finished_at ? relTime(t.finished_at) : "—"}</td>` +
@@ -237,6 +237,8 @@
       kv("priority", t.priority) +
       kv("attempts", `${t.attempts} / ${t.max_retries}`) +
       kv("worker", t.worker_id || "—") +
+      (t.expires_at ? kv("expires", relTime(t.expires_at)) : "") +
+      (t.progress ? `<div class="kv"><span class="muted">progress</span><span>${progressBar(t.progress)}</span></div>` : "") +
       (t.time_limit || t.soft_time_limit
         ? kv("time limits", `soft ${t.soft_time_limit ?? "—"}s / hard ${t.time_limit ?? "—"}s`)
         : "") +
@@ -282,7 +284,7 @@
     const h = (canvas.height = 240);
     ctx.clearRect(0, 0, w, h);
     if (!data.length) {
-      ctx.fillStyle = "#8b96ad"; ctx.font = "24px sans-serif";
+      ctx.fillStyle = "#7a7a7a"; ctx.font = "24px sans-serif";
       ctx.fillText("no finished tasks in the last hour", 20, h / 2);
       return;
     }
@@ -293,15 +295,24 @@
     const bw = w / 60;
     minutes.forEach((m, i) => {
       const v = byMinute[m], bh = (v / max) * (h - 30);
-      ctx.fillStyle = "#e8b04b";
+      ctx.fillStyle = "#ededed";
       const x = w - (minutes.length - i) * bw + 1;
       ctx.fillRect(x, h - 10 - bh, bw - 2, bh);
     });
-    ctx.fillStyle = "#8b96ad"; ctx.font = "20px sans-serif";
+    ctx.fillStyle = "#7a7a7a"; ctx.font = "20px sans-serif";
     ctx.fillText(`peak ${max}/min`, 12, 24);
   }
 
   /* ---------- helpers ---------- */
+  function progressBar(p) {
+    if (!p) return "";
+    const pct = p.percent == null ? null : Math.max(0, Math.min(100, p.percent));
+    const label = (pct == null ? String(p.current) : `${pct}%`) + (p.message ? ` · ${p.message}` : "");
+    return `<div class="progress">` +
+      (pct == null ? "" : `<div class="progress-bar"><span style="width:${pct}%"></span></div>`) +
+      `<span class="progress-label">${esc(label)}</span></div>`;
+  }
+
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
